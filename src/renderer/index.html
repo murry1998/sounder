@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sounder</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="drag-handle"></div>
+<div id="app">
+  <!-- Transport Bar (compact: transport controls + time + BPM + master) -->
+  <div id="transport">
+    <span class="logo">Sounder</span>
+
+    <div class="transport-group">
+      <button class="transport-btn" id="btn-rewind" title="Rewind (Home)">&#9198;</button>
+      <button class="transport-btn" id="btn-play" title="Play/Pause (Space)">&#9654;</button>
+      <button class="transport-btn" id="btn-stop" title="Stop">&#9632;</button>
+      <button class="transport-btn" id="btn-record" title="Record (R)">&#9679;</button>
+      <button class="transport-btn" id="btn-loop" title="Toggle Loop (L)">&#8634;</button>
+    </div>
+
+    <div class="transport-sep"></div>
+    <div id="time-display">00:00.000</div>
+    <div class="transport-sep"></div>
+
+    <div class="compact-control">
+      <label>BPM</label>
+      <input type="number" id="bpm-input" value="120" min="20" max="300">
+    </div>
+    <div class="compact-control">
+      <label>Time</label>
+      <select id="time-sig">
+        <option value="4">4/4</option>
+        <option value="3">3/4</option>
+        <option value="6">6/8</option>
+      </select>
+    </div>
+
+    <div class="transport-spacer"></div>
+
+    <div id="master-section">
+      <label>Master</label>
+      <input type="range" id="master-volume" min="0" max="1" step="0.01" value="0.8">
+      <div class="master-meter-wrap">
+        <div class="master-meter-bar"><div class="master-meter-fill" id="master-meter-l"></div></div>
+        <div class="master-meter-bar"><div class="master-meter-fill" id="master-meter-r"></div></div>
+      </div>
+      <div class="master-peak-indicator" id="master-peak-db">&minus;&infin; dB</div>
+    </div>
+  </div>
+
+  <!-- Secondary Toolbar (actions, metronome, MIDI, zoom) -->
+  <div id="secondary-toolbar">
+    <div class="toolbar-group">
+      <button class="action-btn" id="btn-add-track">+ Audio</button>
+      <button class="action-btn" id="btn-add-midi-track">+ MIDI</button>
+      <button class="action-btn" id="btn-add-bus-track">+ Bus</button>
+      <button class="action-btn" id="btn-import">Import</button>
+      <button class="action-btn" id="btn-export">Export</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+      <button class="action-btn" id="btn-save" title="Save Project (Cmd+S)">Save</button>
+      <button class="action-btn" id="btn-projects" title="Open Project (Cmd+O)">Projects</button>
+      <button class="action-btn" id="btn-audio-settings" title="Audio &amp; MIDI Settings">Audio I/O</button>
+      <button class="action-btn" id="btn-mixer" title="Open Mixer (X)">Mixer</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="compact-control" title="Metronome">
+      <label>Metro</label>
+      <input type="range" id="metro-vol" min="0" max="1" step="0.05" value="0" style="width:40px">
+      <div class="metro-dot" id="metro-dot"></div>
+    </div>
+    <div class="compact-control" title="MIDI Input Activity">
+      <label>MIDI</label>
+      <div class="midi-led" id="midi-led"></div>
+    </div>
+    <div class="toolbar-spacer"></div>
+    <div id="zoom-control">
+      <label>Zoom</label>
+      <input type="range" id="zoom-slider" min="2" max="200" value="40">
+    </div>
+    <div class="compact-control" title="Snap Mode" style="margin-left:6px;">
+      <label style="font-size:10px;color:#999;">Snap</label>
+      <select id="snap-mode" style="width:56px;height:22px;font-size:11px;background:#1a1a2e;color:#e0e0e0;border:1px solid #333;border-radius:3px;">
+        <option value="free">Free</option>
+        <option value="1/4" selected>1/4</option>
+        <option value="1/8">1/8</option>
+        <option value="1/16">1/16</option>
+      </select>
+    </div>
+    <button class="transport-btn" id="btn-follow" title="Follow Playhead" style="width:28px;height:24px;font-size:12px;">F</button>
+    <button class="transport-btn" id="btn-help" title="Shortcuts (?)" style="width:28px;height:24px;font-size:12px;">?</button>
+  </div>
+
+  <!-- Timeline Ruler -->
+  <div id="timeline-ruler">
+    <div id="ruler-spacer">
+      <span class="ruler-info" id="ruler-info">0 tracks</span>
+    </div>
+    <div id="ruler-canvas-wrap">
+      <canvas id="ruler-canvas"></canvas>
+      <div id="loop-overlay"></div>
+    </div>
+  </div>
+
+  <!-- Tracks Area -->
+  <div id="tracks-wrapper">
+    <div id="tracks-panel">
+      <div id="tracks-container"></div>
+      <div id="empty-state">
+        <div class="empty-icon">&#9835;</div>
+        <div>No tracks yet</div>
+        <div class="hint">Add a track and arm it for recording, or import audio files.<br>All audio stays on your machine.</div>
+        <div class="shortcut-hint">
+          <span><kbd>T</kbd> Add track</span>
+          <span><kbd>R</kbd> Record</span>
+          <span><kbd>Space</kbd> Play</span>
+          <span><kbd>?</kbd> All shortcuts</span>
+        </div>
+      </div>
+    </div>
+    <div id="playhead"></div>
+  </div>
+
+  <!-- Footer (status only) -->
+  <div id="footer">
+    <div class="status" id="status-text">Ready</div>
+  </div>
+</div>
+
+<!-- Effects Panel -->
+<div id="fx-panel">
+  <div id="fx-panel-header">
+    <h3 id="fx-panel-title">Effects</h3>
+    <button id="fx-panel-close">&times;</button>
+  </div>
+  <div id="fx-panel-body"></div>
+</div>
+
+<!-- Help Overlay -->
+<div id="help-overlay">
+  <div id="help-card">
+    <h2>KEYBOARD SHORTCUTS</h2>
+    <div class="help-group">
+      <h4>Transport</h4>
+      <div class="help-row"><span class="desc">Play / Pause</span><kbd>Space</kbd></div>
+      <div class="help-row"><span class="desc">Record</span><kbd>R</kbd></div>
+      <div class="help-row"><span class="desc">Stop</span><kbd>Escape</kbd></div>
+      <div class="help-row"><span class="desc">Rewind</span><kbd>Home</kbd></div>
+      <div class="help-row"><span class="desc">Toggle Loop</span><kbd>L</kbd></div>
+    </div>
+    <div class="help-group">
+      <h4>Tracks</h4>
+      <div class="help-row"><span class="desc">Add Audio Track</span><kbd>T</kbd></div>
+      <div class="help-row"><span class="desc">Add MIDI Track</span><kbd>M</kbd></div>
+      <div class="help-row"><span class="desc">Delete Selected</span><kbd>Delete</kbd></div>
+    </div>
+    <div class="help-group">
+      <h4>Project</h4>
+      <div class="help-row"><span class="desc">Save Project</span><kbd>Cmd+S</kbd></div>
+      <div class="help-row"><span class="desc">Open Projects</span><kbd>Cmd+O</kbd></div>
+    </div>
+    <div class="help-group">
+      <h4>View</h4>
+      <div class="help-row"><span class="desc">Zoom In</span><kbd>Cmd+=</kbd></div>
+      <div class="help-row"><span class="desc">Zoom Out</span><kbd>Cmd+-</kbd></div>
+      <div class="help-row"><span class="desc">Open Mixer</span><kbd>X</kbd></div>
+      <div class="help-row"><span class="desc">Show Shortcuts</span><kbd>?</kbd></div>
+    </div>
+    <div style="margin-top:20px;text-align:center">
+      <div style="font-size:10px;color:var(--text-dim)">All audio stays on your machine.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Project Modal -->
+<div id="project-modal">
+  <div id="project-card">
+    <h2>PROJECTS</h2>
+    <ul class="project-list" id="project-list"></ul>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-new-project">New Project</button>
+      <button class="action-btn" id="btn-close-projects">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Plugin Browser Modal -->
+<div id="plugin-modal">
+  <div id="plugin-card">
+    <h2>INSERT PLUGIN</h2>
+    <input type="text" id="plugin-search" placeholder="Search plugins...">
+    <ul class="plugin-list" id="plugin-list"></ul>
+    <div class="modal-actions">
+      <button class="action-btn" id="btn-scan-plugins">Rescan</button>
+      <button class="action-btn" id="btn-browse-plugins">Browse...</button>
+      <button class="action-btn" id="btn-close-plugins">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Instrument Library Modal -->
+<div id="instrument-modal">
+  <div id="instrument-card">
+    <h2>INSTRUMENTS</h2>
+    <div class="inst-tabs">
+      <button class="inst-tab active" data-tab="builtin">Built-in</button>
+      <button class="inst-tab" data-tab="vst">VST / AU</button>
+    </div>
+    <div id="inst-tab-builtin" class="inst-tab-content active">
+      <div class="inst-grid-sfz" id="inst-sfz-grid"></div>
+      <div id="inst-sfz-actions"></div>
+    </div>
+    <div id="inst-tab-vst" class="inst-tab-content">
+      <input type="text" id="inst-vst-search" placeholder="Search VST / AU instruments...">
+      <ul class="plugin-list" id="inst-vst-list"></ul>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn" id="btn-close-instruments">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Instrument Parameter Panel (slide-out) -->
+<div id="inst-param-panel">
+  <div id="inst-param-header">
+    <h3 id="inst-param-title">Instrument</h3>
+    <button id="inst-param-close">&times;</button>
+  </div>
+  <div id="inst-param-body"></div>
+</div>
+
+<!-- Audio Settings Modal -->
+<div id="audio-settings-modal">
+  <div id="audio-settings-card">
+    <h2>AUDIO SETTINGS</h2>
+    <div class="audio-settings-body">
+      <div class="audio-settings-row">
+        <label>Output Device</label>
+        <select id="audio-device-select"></select>
+      </div>
+      <div class="audio-settings-row">
+        <label>Input Device</label>
+        <select id="audio-input-select"></select>
+      </div>
+      <div class="audio-settings-row">
+        <label>Sample Rate</label>
+        <select id="audio-samplerate-select"></select>
+      </div>
+      <div class="audio-settings-row">
+        <label>Buffer Size</label>
+        <select id="audio-buffersize-select"></select>
+      </div>
+      <div class="audio-settings-info" id="audio-device-info"></div>
+
+      <h3 class="settings-section-title">MIDI INPUT</h3>
+      <div id="midi-device-list" class="midi-device-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-apply-audio">Apply</button>
+      <button class="action-btn" id="btn-close-audio-settings">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export Modal -->
+<div id="export-modal">
+  <div id="export-card">
+    <h2>EXPORT</h2>
+    <div class="export-body">
+      <label class="export-checkbox">
+        <input type="checkbox" id="export-stems" checked> Export individual tracks (stems)
+      </label>
+      <label class="export-checkbox">
+        <input type="checkbox" id="export-mixdown" checked> Export mixdown
+      </label>
+      <div class="audio-settings-row">
+        <label>Format</label>
+        <select id="export-format">
+          <option value="wav" selected>WAV</option>
+          <option value="aiff">AIFF</option>
+          <option value="mp3">MP3</option>
+        </select>
+      </div>
+      <div class="audio-settings-row" id="export-bitdepth-row">
+        <label>Bit Depth</label>
+        <select id="export-bitdepth">
+          <option value="16">16-bit</option>
+          <option value="24" selected>24-bit</option>
+          <option value="32">32-bit float</option>
+        </select>
+      </div>
+      <div class="audio-settings-row" id="export-bitrate-row" style="display:none">
+        <label>Bitrate</label>
+        <select id="export-bitrate">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320" selected>320 kbps</option>
+        </select>
+      </div>
+      <div id="export-progress" class="export-progress" style="display:none">
+        <div class="export-progress-bar"><div class="export-progress-fill" id="export-progress-fill"></div></div>
+        <div class="export-progress-text" id="export-progress-text">Exporting...</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-do-export">Export</button>
+      <button class="action-btn" id="btn-close-export">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- MIDI AI Generation Modal -->
+<div id="midi-ai-modal">
+  <div id="midi-ai-card">
+    <h2>AI MIDI GENERATION</h2>
+    <div class="ai-gen-body">
+      <div class="ai-gen-row">
+        <label>Style</label>
+        <select id="ai-midi-style">
+          <option value="melody">Melody</option>
+          <option value="bass">Bass</option>
+          <option value="chords">Chords</option>
+          <option value="arpeggio">Arpeggio</option>
+          <option value="drums">Drums</option>
+        </select>
+      </div>
+      <div class="ai-gen-row">
+        <label>Length</label>
+        <input type="range" id="ai-midi-bars" min="1" max="16" value="4" step="1">
+        <span class="ai-gen-val" id="ai-midi-bars-val">4 bars</span>
+      </div>
+      <div class="ai-gen-row">
+        <label>Key</label>
+        <select id="ai-midi-key">
+          <option value="0">C</option>
+          <option value="1">C#/Db</option>
+          <option value="2">D</option>
+          <option value="3">D#/Eb</option>
+          <option value="4">E</option>
+          <option value="5">F</option>
+          <option value="6">F#/Gb</option>
+          <option value="7">G</option>
+          <option value="8">G#/Ab</option>
+          <option value="9">A</option>
+          <option value="10">A#/Bb</option>
+          <option value="11">B</option>
+        </select>
+      </div>
+      <div class="ai-gen-row">
+        <label>Scale</label>
+        <select id="ai-midi-scale">
+          <option value="major">Major</option>
+          <option value="minor">Minor</option>
+          <option value="dorian">Dorian</option>
+          <option value="mixolydian">Mixolydian</option>
+          <option value="pentatonic">Pentatonic</option>
+          <option value="chromatic">Chromatic</option>
+        </select>
+      </div>
+      <div class="ai-gen-row">
+        <label>Density</label>
+        <input type="range" id="ai-midi-density" min="0" max="100" value="50" step="1">
+        <span class="ai-gen-val" id="ai-midi-density-val">50%</span>
+      </div>
+      <div class="ai-gen-row">
+        <label>Temperature</label>
+        <input type="range" id="ai-midi-temp" min="1" max="20" value="10" step="1">
+        <span class="ai-gen-val" id="ai-midi-temp-val">1.0</span>
+      </div>
+      <div class="ai-gen-row">
+        <label>Swing</label>
+        <input type="range" id="ai-midi-swing" min="0" max="100" value="0" step="1">
+        <span class="ai-gen-val" id="ai-midi-swing-val">0%</span>
+      </div>
+      <div class="ai-gen-row">
+        <label>Octave Range</label>
+        <select id="ai-midi-oct-low">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+        <span class="ai-gen-sep">to</span>
+        <select id="ai-midi-oct-high">
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6" selected>6</option>
+          <option value="7">7</option>
+        </select>
+      </div>
+      <label class="ai-gen-checkbox">
+        <input type="checkbox" id="ai-midi-replace" checked> Replace existing notes
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-midi-ai-generate">Generate</button>
+      <button class="action-btn" id="btn-midi-ai-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Audio AI Generation Modal (transformers.js) -->
+<div id="audio-ai-modal">
+  <div id="audio-ai-card">
+    <h2>AI AUDIO GENERATOR</h2>
+    <div class="ai-gen-body">
+      <div class="ai-gen-row">
+        <label>Model</label>
+        <select id="ai-audio-model">
+          <option value="">Loading...</option>
+        </select>
+      </div>
+      <div class="ai-gen-row ai-prompt-row">
+        <label>Prompt</label>
+        <textarea id="ai-audio-prompt" rows="2" placeholder="Describe the music you want, e.g. 'a funky bass groove with drums'"></textarea>
+      </div>
+      <div class="ai-gen-row">
+        <label>Duration</label>
+        <input type="range" id="ai-audio-duration" min="2" max="30" value="8" step="1">
+        <span class="ai-gen-val" id="ai-audio-duration-val">8s</span>
+      </div>
+      <div class="ai-gen-row">
+        <label>Creativity</label>
+        <input type="range" id="ai-audio-temp" min="0.5" max="2.0" value="1.0" step="0.1">
+        <span class="ai-gen-val" id="ai-audio-temp-val">1.0</span>
+      </div>
+      <div id="ai-audio-progress-wrap" style="display:none;">
+        <div class="ai-progress-track">
+          <div class="ai-progress-bar" id="ai-audio-progress-bar"></div>
+        </div>
+        <div class="ai-status-text" id="ai-audio-status"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-audio-ai-generate" disabled>Generate</button>
+      <button class="action-btn danger" id="btn-audio-ai-cancel" style="display:none;">Cancel</button>
+      <button class="action-btn" id="btn-audio-ai-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tempo Match Modal -->
+<div id="tempo-match-modal">
+  <div id="tempo-match-card">
+    <h2>TEMPO MATCH</h2>
+    <div class="modal-form-body">
+      <div class="audio-settings-row">
+        <label>Source BPM</label>
+        <select id="tm-source-mode">
+          <option value="auto" selected>Auto-detect</option>
+          <option value="manual">Manual</option>
+        </select>
+      </div>
+      <div class="audio-settings-row" id="tm-manual-row" style="display:none">
+        <label>BPM</label>
+        <input type="number" id="tm-manual-bpm" min="20" max="300" value="120" step="0.1">
+      </div>
+      <div class="audio-settings-row">
+        <label>Min BPM</label>
+        <input type="number" id="tm-min-bpm" min="20" max="300" value="40">
+      </div>
+      <div class="audio-settings-row">
+        <label>Max BPM</label>
+        <input type="number" id="tm-max-bpm" min="20" max="300" value="220">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-tm-go">Go</button>
+      <button class="action-btn" id="btn-tm-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Stems Modal -->
+<div id="stems-modal">
+  <div id="stems-card">
+    <h2>STEM SEPARATION</h2>
+    <div class="modal-form-body">
+      <label class="export-checkbox"><input type="checkbox" id="stems-vocals" checked> Vocals</label>
+      <label class="export-checkbox"><input type="checkbox" id="stems-bass" checked> Bass</label>
+      <label class="export-checkbox"><input type="checkbox" id="stems-drums" checked> Drums</label>
+      <label class="export-checkbox"><input type="checkbox" id="stems-other" checked> Other</label>
+      <div class="modal-sep"></div>
+      <label class="export-checkbox"><input type="checkbox" id="stems-mute-original"> Mute original track after separation</label>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-stems-go">Separate</button>
+      <button class="action-btn" id="btn-stems-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Piano Roll Overlay -->
+<div id="piano-roll-overlay">
+  <div class="pr-toolbar">
+    <span id="pr-title" class="pr-title">Piano Roll</span>
+    <div class="pr-tool-group">
+      <button class="pr-tool-btn" data-tool="select" title="Select (1)">Sel</button>
+      <button class="pr-tool-btn active" data-tool="draw" title="Draw (2)">Draw</button>
+      <button class="pr-tool-btn" data-tool="erase" title="Erase (3)">Erase</button>
+    </div>
+    <div class="pr-tool-group">
+      <label>Grid</label>
+      <select id="pr-grid-size">
+        <option value="1">1 beat</option>
+        <option value="0.5">1/2</option>
+        <option value="0.25" selected>1/4</option>
+        <option value="0.125">1/8</option>
+        <option value="0.0625">1/16</option>
+      </select>
+    </div>
+    <button class="pr-tool-btn" id="pr-quantize" title="Quantize notes to grid">Quantize</button>
+    <div class="pr-spacer"></div>
+    <button class="pr-close-btn" id="pr-close">&times;</button>
+  </div>
+  <div class="pr-body">
+    <div class="pr-piano-col">
+      <div class="pr-piano-wrap"><canvas id="piano-roll-piano"></canvas></div>
+      <div class="pr-vel-label">Vel</div>
+    </div>
+    <div class="pr-main-col">
+      <div class="pr-canvas-wrap"><canvas id="piano-roll-canvas"></canvas></div>
+      <div class="pr-velocity-wrap"><canvas id="piano-roll-velocity"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- Mixer Board Overlay -->
+<div id="mixer-overlay">
+  <div class="mixer-toolbar">
+    <span class="mixer-title">Mixer</span>
+    <div class="mixer-toolbar-spacer"></div>
+    <button class="mixer-close-btn" id="mixer-close">&times;</button>
+  </div>
+  <div class="mixer-body">
+    <div class="mixer-strips-scroll">
+      <div class="mixer-strips" id="mixer-strips"></div>
+    </div>
+    <div class="mixer-master-strip">
+      <!-- Populated by mixer-board.js -->
+    </div>
+  </div>
+</div>
+
+<!-- Insert Picker Modal (Native + VST effects) -->
+<div id="insert-picker-modal">
+  <div id="insert-picker-card">
+    <h2>INSERT EFFECT</h2>
+    <div class="inst-tabs">
+      <button class="insert-tab active" data-tab="native">Native</button>
+      <button class="insert-tab" data-tab="vst">VST / AU</button>
+    </div>
+    <div id="insert-tab-native" class="insert-tab-content active">
+      <div class="insert-native-grid" id="insert-native-grid"></div>
+    </div>
+    <div id="insert-tab-vst" class="insert-tab-content">
+      <input type="text" id="insert-vst-search" placeholder="Search effect plugins...">
+      <ul class="plugin-list" id="insert-vst-list"></ul>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn" id="btn-close-insert-picker">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Insert Effect Parameter Panel -->
+<div id="insert-param-panel">
+  <div id="insert-param-header">
+    <h3 id="insert-param-title">Effect</h3>
+    <button id="insert-param-close">&times;</button>
+  </div>
+  <div id="insert-param-body"></div>
+</div>
+
+<!-- Stem Separation Progress Overlay -->
+<div id="stems-progress">
+  <div class="stems-progress-card">
+    <div class="stems-progress-title">Separating Stems...</div>
+    <div class="stems-progress-bar"><div class="stems-progress-fill"></div></div>
+    <div class="stems-progress-status">Processing audio with AI model</div>
+  </div>
+</div>
+
+<script src="mixer-board.js"></script>
+<script src="piano-roll.js"></script>
+<script src="undo-manager.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>

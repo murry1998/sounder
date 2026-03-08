@@ -1,0 +1,52 @@
+{
+  "name": "sounder",
+  "version": "1.0.0",
+  "description": "Sounder -- Desktop DAW with native audio engine, AI music generation, stem separation, and VST3/AU plugin hosting",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:native": "cmake-js compile -d native",
+    "rebuild:native": "cmake-js rebuild -d native --runtime=electron --runtime-version=33.0.0 --arch=arm64",
+    "setup:models": "node scripts/download-models.js",
+    "package": "electron-builder --mac",
+    "dev": "electron .",
+    "dev:launch": "bash dev-launch.sh",
+    "postinstall": "node scripts/codesign-electron.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "cmake-js": "^7.3.0",
+    "node-addon-api": "^8.0.0",
+    "onnxruntime-node": "^1.24.2"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.3.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "author": "Dylan James Brock",
+  "license": "GPL-3.0",
+  "homepage": "https://github.com/murry1998/sounder",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/murry1998/sounder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/murry1998/sounder/issues"
+  },
+  "keywords": [
+    "daw",
+    "audio",
+    "music",
+    "vst3",
+    "au",
+    "electron",
+    "juce",
+    "recording",
+    "ai",
+    "musicgen"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

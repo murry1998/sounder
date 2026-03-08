@@ -1,0 +1,3 @@
+[submodule "native/JUCE"]
+	path = native/JUCE
+	url = https://github.com/juce-framework/JUCE.git

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Native build artifacts
+native/build/
+*.node
+*.o
+*.a
+*.dylib
+
+# Electron packaged output
+dist/
+
+# AI model files (download via: npm run setup:models)
+resources/models/*.onnx
+resources/models/musicgen-small/onnx/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-workspace
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Claude Code dev config
+.claude/

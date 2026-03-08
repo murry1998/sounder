@@ -1,0 +1,38 @@
+appId: com.hauksbee.sounder
+productName: Sounder
+directories:
+  output: dist
+mac:
+  category: public.app-category.music
+  icon: resources/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  gatekeeperAssess: false
+  extendInfo:
+    NSMicrophoneUsageDescription: "Sounder needs microphone access to record audio."
+    NSDocumentsFolderUsageDescription: "Sounder saves projects to your Documents folder."
+dmg:
+  iconSize: 100
+  contents:
+    - x: 380
+      y: 170
+      type: link
+      path: /Applications
+    - x: 130
+      y: 170
+      type: file
+asarUnpack:
+  - native/build/Release/sounder_engine.node
+files:
+  - src/**/*
+  - native/build/Release/sounder_engine.node
+  - "!native/src/**"
+  - "!native/include/**"
+  - "!native/JUCE/**"
+  - "!native/CMakeLists.txt"
+  - "!**/*.map"
