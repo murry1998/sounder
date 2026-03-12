@@ -5328,8 +5328,14 @@ document.addEventListener('drop', async (e) => {
   setStatus('Imported audio');
 });
 
+let _skipStartupModal = false;
+
 // Menu actions from native macOS menu
 engine.onMenuAction((action) => {
+  // Dismiss the recent files modal if it's open — menu action takes priority
+  _skipStartupModal = true;
+  document.getElementById('recent-files-modal').classList.remove('open');
+
   switch (action) {
     case 'undo':
       if (document.activeElement?.tagName === 'INPUT' && document.activeElement?.type !== 'range') {
@@ -5455,8 +5461,8 @@ document.getElementById('recent-files-modal').onclick = e => {
   if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
 };
 
-// Show recent files on startup
-setTimeout(() => showRecentFilesModal(), 500);
+// Show recent files on startup (unless a menu action already fired)
+setTimeout(() => { if (!_skipStartupModal) showRecentFilesModal(); }, 500);
 
 // Periodic MIDI device scan for hotplug support
 setInterval(async () => {
