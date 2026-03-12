@@ -127,6 +127,29 @@ async function requestMicrophonePermission() {
   return finalStatus === 'granted';
 }
 
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 850,
+    minWidth: 900,
+    minHeight: 600,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#09090b',
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // Build native macOS menu
+  const menuTemplate = require('./menu.js')(mainWindow);
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+}
+
 app.whenReady().then(async () => {
   // Ensure projects directory exists
   fs.mkdirSync(PROJECTS_DIR, { recursive: true });
@@ -147,30 +170,15 @@ app.whenReady().then(async () => {
     });
   }
 
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 850,
-    minWidth: 900,
-    minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: '#09090b',
-    webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
-  });
-
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
+  createWindow();
 
   // Register all IPC handlers
   registerIPCHandlers();
+});
 
-  // Build native macOS menu
-  const menuTemplate = require('./menu.js')(mainWindow);
-  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+app.on('activate', () => {
+  // macOS: re-create window when dock icon is clicked and no windows are open
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 app.on('window-all-closed', () => {
