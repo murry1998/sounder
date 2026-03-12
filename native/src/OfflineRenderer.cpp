@@ -217,5 +217,20 @@ bool OfflineRenderer::renderMixdownToFile(AudioGraph& graph, const std::string& 
     // Apply master volume
     output.applyGain(graph.getMasterVolume());
 
+    // Normalize if requested
+    if (options.normalize) {
+        float peak = 0.0f;
+        for (int ch = 0; ch < 2; ch++) {
+            const float* data = output.getReadPointer(ch);
+            for (int i = 0; i < totalSamples; i++) {
+                float absVal = std::abs(data[i]);
+                if (absVal > peak) peak = absVal;
+            }
+        }
+        if (peak > 1e-8f) {
+            output.applyGain(1.0f / peak);
+        }
+    }
+
     return writeWithFormat(filePath, output, sampleRate, options);
 }

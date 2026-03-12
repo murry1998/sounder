@@ -13,6 +13,67 @@ void AudioTrack::setBuffer(std::unique_ptr<juce::AudioBuffer<float>> buffer, dou
     bufferSampleRate = fileSampleRate;
 }
 
+double AudioTrack::appendBuffer(std::unique_ptr<juce::AudioBuffer<float>> newAudio, double newSampleRate) {
+    if (!hasBuffer()) {
+        setBuffer(std::move(newAudio), newSampleRate);
+        return 0.0;
+    }
+
+    int existingSamples = audioBuffer->getNumSamples();
+    int existingChannels = audioBuffer->getNumChannels();
+    double appendOffset = static_cast<double>(existingSamples) / bufferSampleRate;
+
+    // Resample new audio to match existing buffer sample rate if needed
+    int newSamples = newAudio->getNumSamples();
+    int newChannels = newAudio->getNumChannels();
+    int outChannels = std::max(existingChannels, newChannels);
+
+    std::unique_ptr<juce::AudioBuffer<float>> resampledNew;
+    if (std::abs(newSampleRate - bufferSampleRate) > 1.0) {
+        double ratio = bufferSampleRate / newSampleRate;
+        int resampledLength = static_cast<int>(newSamples * ratio);
+        resampledNew = std::make_unique<juce::AudioBuffer<float>>(newChannels, resampledLength);
+        for (int ch = 0; ch < newChannels; ch++) {
+            const float* src = newAudio->getReadPointer(ch);
+            float* dst = resampledNew->getWritePointer(ch);
+            for (int i = 0; i < resampledLength; i++) {
+                double srcPos = i / ratio;
+                int idx = static_cast<int>(srcPos);
+                float frac = static_cast<float>(srcPos - idx);
+                if (idx + 1 < newSamples)
+                    dst[i] = src[idx] * (1.0f - frac) + src[idx + 1] * frac;
+                else if (idx < newSamples)
+                    dst[i] = src[idx];
+                else
+                    dst[i] = 0.0f;
+            }
+        }
+        newSamples = resampledLength;
+    } else {
+        resampledNew = std::move(newAudio);
+    }
+
+    // Create combined buffer
+    int totalSamples = existingSamples + newSamples;
+    auto combined = std::make_unique<juce::AudioBuffer<float>>(outChannels, totalSamples);
+    combined->clear();
+
+    // Copy existing audio
+    for (int ch = 0; ch < outChannels; ch++) {
+        int srcCh = std::min(ch, existingChannels - 1);
+        combined->copyFrom(ch, 0, *audioBuffer, srcCh, 0, existingSamples);
+    }
+
+    // Copy new audio after existing
+    for (int ch = 0; ch < outChannels; ch++) {
+        int srcCh = std::min(ch, resampledNew->getNumChannels() - 1);
+        combined->copyFrom(ch, existingSamples, *resampledNew, srcCh, 0, newSamples);
+    }
+
+    audioBuffer = std::move(combined);
+    return appendOffset;
+}
+
 bool AudioTrack::hasBuffer() const {
     return audioBuffer != nullptr && audioBuffer->getNumSamples() > 0;
 }
@@ -68,8 +129,15 @@ void AudioTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples, 
 
     int relativeSample = static_cast<int>(relativeTime * bufferSampleRate);
 
-    // Without looping, check if we've gone past the clip
+    // Compute total playable length (accounting for loop count)
+    int totalPlayLength = clipLength;
+    if (regionLoopEnabled && regionLoopCount > 0) {
+        totalPlayLength = clipLength * (regionLoopCount + 1);
+    }
+
+    // Without looping, or past finite loop end, stop
     if (!regionLoopEnabled && relativeSample >= clipLength) return;
+    if (regionLoopEnabled && regionLoopCount > 0 && relativeSample >= totalPlayLength) return;
 
     // Prepare plugin process buffer
     pluginProcessBuffer.setSize(2, numSamples, false, false, true);
@@ -79,7 +147,13 @@ void AudioTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples, 
     for (int i = 0; i < samplesToRead; i++) {
         int sampleInClip;
         if (regionLoopEnabled) {
-            sampleInClip = (relativeSample + i) % clipLength;
+            int pos = relativeSample + i;
+            // Stop at loop count boundary
+            if (regionLoopCount > 0 && pos >= totalPlayLength) {
+                samplesToRead = i;
+                break;
+            }
+            sampleInClip = pos % clipLength;
         } else {
             sampleInClip = relativeSample + i;
             if (sampleInClip >= clipLength) {
@@ -113,11 +187,16 @@ void AudioTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples, 
         pluginProcessBuffer.setSample(1, i, sR);
     }
 
-    // Route through insert chain
+    // Route through insert chain (try-lock: skip if insert is being swapped)
     emptyMidiBuffer.clear();
-    for (int slot = 0; slot < MAX_INSERT_SLOTS; slot++) {
-        if (insertSlots[slot]) {
-            insertSlots[slot]->processBlock(pluginProcessBuffer, emptyMidiBuffer);
+    {
+        juce::SpinLock::ScopedTryLockType lock(insertLock);
+        if (lock.isLocked()) {
+            for (int slot = 0; slot < MAX_INSERT_SLOTS; slot++) {
+                if (insertSlots[slot]) {
+                    insertSlots[slot]->processBlock(pluginProcessBuffer, emptyMidiBuffer);
+                }
+            }
         }
     }
 
@@ -164,6 +243,7 @@ void AudioTrack::setRegionOffset(double t) { regionOffset = std::max(0.0, t); }
 void AudioTrack::setRegionClipStart(double t) { regionClipStart = std::max(0.0, t); }
 void AudioTrack::setRegionClipEnd(double t) { regionClipEnd = t; }
 void AudioTrack::setRegionLoopEnabled(bool enabled) { regionLoopEnabled = enabled; }
+void AudioTrack::setRegionLoopCount(int count) { regionLoopCount = std::max(0, count); }
 
 std::unique_ptr<juce::AudioBuffer<float>> AudioTrack::extractBuffer(int startSample, int endSample) {
     if (!hasBuffer()) return nullptr;
@@ -215,20 +295,36 @@ void AudioTrack::setFxEnabled(const std::string& fxType, bool enabled) {
 void AudioTrack::insertPlugin(int slotIndex, std::unique_ptr<juce::AudioPluginInstance> plugin) {
     if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
         plugin->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slotIndex] = std::move(plugin);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+            insertSlots[slotIndex] = std::move(plugin);
+        }
+        // old destroyed outside lock
     }
 }
 
 void AudioTrack::insertBuiltInEffect(int slotIndex, std::unique_ptr<juce::AudioProcessor> effect) {
     if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
         effect->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slotIndex] = std::move(effect);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+            insertSlots[slotIndex] = std::move(effect);
+        }
     }
 }
 
 void AudioTrack::removeInsert(int slotIndex) {
-    if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS)
-        insertSlots[slotIndex].reset();
+    if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+        }
+    }
 }
 
 void AudioTrack::removePlugin(int slotIndex) { removeInsert(slotIndex); }
@@ -273,6 +369,76 @@ bool AudioTrack::tempoMatchAudio(double targetBPM, double& detectedBPM,
     if (!result.success || !result.stretchedBuffer) return false;
 
     audioBuffer = std::move(result.stretchedBuffer);
+    return true;
+}
+
+bool AudioTrack::transposeAudio(const TransposeOptions& options) {
+    if (!hasBuffer() || options.semitones == 0) return true; // no-op is success
+    if (options.semitones < -24 || options.semitones > 24) return false;
+
+    double pitchRatio = std::pow(2.0, options.semitones / 12.0);
+    int numChannels = audioBuffer->getNumChannels();
+    int originalLength = audioBuffer->getNumSamples();
+
+    // Step 1: Resample to change pitch (new length = oldLength / pitchRatio)
+    int resampledLength = static_cast<int>(originalLength / pitchRatio);
+    if (resampledLength <= 0) return false;
+
+    auto resampled = std::make_unique<juce::AudioBuffer<float>>(numChannels, resampledLength);
+    for (int ch = 0; ch < numChannels; ch++) {
+        const float* src = audioBuffer->getReadPointer(ch);
+        float* dst = resampled->getWritePointer(ch);
+        for (int i = 0; i < resampledLength; i++) {
+            double srcPos = i * pitchRatio;
+            int idx = static_cast<int>(srcPos);
+            float frac = static_cast<float>(srcPos - idx);
+            if (idx + 1 < originalLength)
+                dst[i] = src[idx] * (1.0f - frac) + src[idx + 1] * frac;
+            else if (idx < originalLength)
+                dst[i] = src[idx];
+            else
+                dst[i] = 0.0f;
+        }
+    }
+
+    if (options.preserveTempo) {
+        // Step 2: Time-stretch back to original length using WSOLA
+        BeatQuantizer quantizer;
+        auto stretched = quantizer.wsolaStretch(*resampled, originalLength);
+        audioBuffer = std::make_unique<juce::AudioBuffer<float>>(std::move(stretched));
+    } else {
+        // Speed change mode: just use resampled buffer
+        audioBuffer = std::move(resampled);
+    }
+
+    return true;
+}
+
+bool AudioTrack::normalizeAudio(float targetPeakDb) {
+    if (!hasBuffer()) return false;
+
+    int numChannels = audioBuffer->getNumChannels();
+    int numSamples = audioBuffer->getNumSamples();
+    if (numSamples == 0) return false;
+
+    // Find peak amplitude across all channels
+    float currentPeak = 0.0f;
+    for (int ch = 0; ch < numChannels; ch++) {
+        const float* data = audioBuffer->getReadPointer(ch);
+        for (int i = 0; i < numSamples; i++) {
+            float absVal = std::abs(data[i]);
+            if (absVal > currentPeak) currentPeak = absVal;
+        }
+    }
+
+    if (currentPeak < 1e-8f) return false; // silence, can't normalize
+
+    // Calculate target peak from dB
+    float targetPeak = std::pow(10.0f, targetPeakDb / 20.0f);
+    float gain = targetPeak / currentPeak;
+
+    // Apply gain
+    audioBuffer->applyGain(gain);
     return true;
 }
 

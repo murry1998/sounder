@@ -23,9 +23,8 @@ bool StemSeparator::loadModel(const std::string& modelPath) {
         env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "StemSeparator");
         sessionOptions = std::make_unique<Ort::SessionOptions>();
 
-        // Use available cores for faster inference
-        int numCores = std::max(1, (int)std::thread::hardware_concurrency() / 2);
-        sessionOptions->SetIntraOpNumThreads(numCores);
+        // Single-threaded to avoid mutex conflicts with audio engine's ONNX usage
+        sessionOptions->SetIntraOpNumThreads(1);
         sessionOptions->SetInterOpNumThreads(1);
         sessionOptions->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
         sessionOptions->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);

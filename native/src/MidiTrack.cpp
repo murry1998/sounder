@@ -180,11 +180,16 @@ void MidiTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples,
     instrumentOutputBuffer.clear();
     instrumentProcessor->processBlock(instrumentOutputBuffer, midiBuffer);
 
-    // Route through effect chain (stereo only, channels 0-1)
+    // Route through effect chain (try-lock: skip if insert is being swapped)
     juce::MidiBuffer emptyMidi;
-    for (auto& fx : insertSlots) {
-        if (fx) {
-            fx->processBlock(instrumentOutputBuffer, emptyMidi);
+    {
+        juce::SpinLock::ScopedTryLockType iLock(insertLock);
+        if (iLock.isLocked()) {
+            for (auto& fx : insertSlots) {
+                if (fx) {
+                    fx->processBlock(instrumentOutputBuffer, emptyMidi);
+                }
+            }
         }
     }
 
@@ -269,20 +274,35 @@ void MidiTrack::insertEffect(int slotIndex, std::unique_ptr<juce::AudioPluginIns
     if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
         plugin->setPlayConfigDetails(2, 2, sampleRate, blockSize);
         plugin->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slotIndex] = std::move(plugin);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+            insertSlots[slotIndex] = std::move(plugin);
+        }
     }
 }
 
 void MidiTrack::insertBuiltInEffect(int slotIndex, std::unique_ptr<juce::AudioProcessor> effect) {
     if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
         effect->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slotIndex] = std::move(effect);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+            insertSlots[slotIndex] = std::move(effect);
+        }
     }
 }
 
 void MidiTrack::removeInsert(int slotIndex) {
-    if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS)
-        insertSlots[slotIndex].reset();
+    if (slotIndex >= 0 && slotIndex < MAX_INSERT_SLOTS) {
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slotIndex]);
+        }
+    }
 }
 
 void MidiTrack::removeEffect(int slotIndex) { removeInsert(slotIndex); }

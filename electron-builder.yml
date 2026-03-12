@@ -28,9 +28,12 @@ dmg:
       type: file
 asarUnpack:
   - native/build/Release/sounder_engine.node
+  - native/build/Release/libonnxruntime.1.24.2.dylib
 files:
   - src/**/*
   - native/build/Release/sounder_engine.node
+  - native/build/Release/libonnxruntime.1.24.2.dylib
+  - resources/models/musicgen-small/*.json
   - "!native/src/**"
   - "!native/include/**"
   - "!native/JUCE/**"

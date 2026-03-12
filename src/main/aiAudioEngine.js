@@ -2,17 +2,49 @@
 
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
 const { fork, execSync } = require('child_process');
+const { app } = require('electron');
 
-// Resolve bundled model path (works in dev and packaged builds)
+const HF_BASE = 'https://huggingface.co';
+
+// Resolve model path — prefers user data dir (writable) in packaged app
 function getModelsDir() {
+  if (app && app.isPackaged) {
+    const userModels = path.join(app.getPath('userData'), 'models');
+    fs.mkdirSync(userModels, { recursive: true });
+    // Copy bundled JSON configs from app resources into writable models dir
+    seedBundledConfigs(userModels);
+    return userModels;
+  }
   const devPath = path.join(__dirname, '../../resources/models');
   const packedPath = devPath.replace('app.asar', 'app.asar.unpacked');
   if (fs.existsSync(packedPath)) return packedPath;
   return devPath;
 }
 
-// Model registry - all models are bundled locally
+// Copy bundled JSON config files from the asar resources to the writable models dir
+function seedBundledConfigs(userModelsDir) {
+  const bundledDir = path.join(__dirname, '../../resources/models');
+  const mgSrc = path.join(bundledDir, 'musicgen-small');
+  const mgDest = path.join(userModelsDir, 'musicgen-small');
+
+  if (!fs.existsSync(mgSrc)) return;
+  fs.mkdirSync(mgDest, { recursive: true });
+
+  const jsonFiles = ['config.json', 'generation_config.json', 'tokenizer.json',
+                     'tokenizer_config.json', 'preprocessor_config.json'];
+  for (const file of jsonFiles) {
+    const src = path.join(mgSrc, file);
+    const dest = path.join(mgDest, file);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      try { fs.copyFileSync(src, dest); } catch (_) {}
+    }
+  }
+}
+
+// Model registry
 const AI_MODELS = {
   'musicgen-small': {
     name: 'MusicGen Small',
@@ -23,6 +55,100 @@ const AI_MODELS = {
     description: 'Text-to-music generation (Meta, 300M params)'
   },
 };
+
+// Files required for each model download
+const MODEL_FILES = {
+  'musicgen-small': [
+    // ONNX model files only — JSON configs are bundled in the app and seeded automatically
+    { url: `${HF_BASE}/Xenova/musicgen-small/resolve/main/onnx/decoder_model_merged.onnx`, rel: 'onnx/decoder_model_merged.onnx', label: 'MusicGen decoder (~1.6 GB)' },
+    { url: `${HF_BASE}/Xenova/musicgen-small/resolve/main/onnx/text_encoder.onnx`, rel: 'onnx/text_encoder.onnx', label: 'MusicGen text encoder (~418 MB)' },
+    { url: `${HF_BASE}/Xenova/musicgen-small/resolve/main/onnx/encodec_decode.onnx`, rel: 'onnx/encodec_decode.onnx', label: 'MusicGen EnCodec decoder (~113 MB)' },
+  ],
+  'htdemucs': [
+    { url: `${HF_BASE}/Xenova/htdemucs/resolve/main/onnx/model.onnx`, rel: 'htdemucs.onnx', label: 'HTDemucs (stem separation, ~166 MB)', root: true },
+  ]
+};
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const get = url.startsWith('https') ? https.get : http.get;
+    get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+      }
+      const total = parseInt(res.headers['content-length'] || '0', 10);
+      let received = 0;
+      const file = fs.createWriteStream(dest);
+      res.on('data', (chunk) => {
+        received += chunk.length;
+        if (_downloadProgress) _downloadProgress({ received, total });
+      });
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(); });
+      file.on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+    }).on('error', reject);
+  });
+}
+
+let _downloadProgress = null;
+
+async function downloadModels(modelId, onProgress) {
+  const files = MODEL_FILES[modelId];
+  if (!files) return { error: `Unknown model: ${modelId}` };
+
+  const modelsDir = getModelsDir();
+  const modelDir = AI_MODELS[modelId] ? path.join(modelsDir, AI_MODELS[modelId].localDir) : modelsDir;
+  let downloaded = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const dest = f.root ? path.join(modelsDir, f.rel) : path.join(modelDir, f.rel);
+
+    if (fs.existsSync(dest)) {
+      downloaded++;
+      if (onProgress) onProgress({ file: f.label, fileIndex: i, totalFiles: files.length, status: 'skip' });
+      continue;
+    }
+
+    if (onProgress) onProgress({ file: f.label, fileIndex: i, totalFiles: files.length, status: 'downloading', received: 0, total: 0 });
+
+    _downloadProgress = (data) => {
+      if (onProgress) onProgress({ file: f.label, fileIndex: i, totalFiles: files.length, status: 'downloading', received: data.received, total: data.total });
+    };
+
+    try {
+      await downloadFile(f.url, dest);
+      downloaded++;
+      if (onProgress) onProgress({ file: f.label, fileIndex: i, totalFiles: files.length, status: 'done' });
+    } catch (err) {
+      _downloadProgress = null;
+      return { error: `Failed to download ${f.label}: ${err.message}` };
+    }
+  }
+
+  _downloadProgress = null;
+  return { ok: true, downloaded };
+}
+
+function getMissingModels() {
+  const modelsDir = getModelsDir();
+  const missing = [];
+  for (const [id, info] of Object.entries(AI_MODELS)) {
+    const modelPath = path.join(modelsDir, info.localDir);
+    if (!fs.existsSync(path.join(modelPath, 'onnx', 'decoder_model_merged.onnx'))) {
+      missing.push(id);
+    }
+  }
+  // Check HTDemucs
+  if (!fs.existsSync(path.join(modelsDir, 'htdemucs.onnx'))) {
+    missing.push('htdemucs');
+  }
+  return missing;
+}
 
 let _worker = null;
 let _workerReady = false;
@@ -118,7 +244,7 @@ async function generateAudio(modelId, prompt, config, onProgress) {
   const modelsDir = getModelsDir();
   const modelPath = path.join(modelsDir, model.localDir);
   if (!fs.existsSync(modelPath)) {
-    return { error: 'Model files not found. Reinstall the app.' };
+    return { error: 'Model files not found. Use the Download Models button in the AI panel.' };
   }
 
   try {
@@ -192,6 +318,9 @@ function cancelGeneration() {
 
 module.exports = {
   getModels,
+  getModelsDir,
+  getMissingModels,
+  downloadModels,
   generateAudio,
   cancelGeneration
 };

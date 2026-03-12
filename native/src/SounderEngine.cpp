@@ -1,6 +1,7 @@
 #include <napi.h>
 #include <thread>
 #include <chrono>
+#include <map>
 #include "SounderEngine.h"
 #include "FileIO.h"
 #include "OfflineRenderer.h"
@@ -18,6 +19,14 @@ static std::unique_ptr<SounderEngine> g_engine;
 static Napi::ThreadSafeFunction g_meterTSFN;
 static std::unique_ptr<std::thread> g_meterThread;
 static std::atomic<bool> g_meterRunning{false};
+
+// ── Audio buffer snapshots for undo ──
+struct AudioSnapshot {
+    std::unique_ptr<juce::AudioBuffer<float>> buffer;
+    double sampleRate;
+};
+static std::map<int, AudioSnapshot> g_audioSnapshots;
+static int g_nextSnapshotId = 1;
 
 // No CFRunLoop pump needed: JUCE registers its CFRunLoopSource in
 // kCFRunLoopCommonModes, so Electron's main runloop already processes
@@ -151,9 +160,11 @@ static Napi::Value NapiInitialize(const Napi::CallbackInfo& info) {
     double sr = config.Has("sampleRate") ? config.Get("sampleRate").As<Napi::Number>().DoubleValue() : 48000.0;
     int bs = config.Has("bufferSize") ? config.Get("bufferSize").As<Napi::Number>().Int32Value() : 512;
     std::string projDir = config.Has("projectsDir") ? config.Get("projectsDir").As<Napi::String>().Utf8Value() : "";
+    std::string resDir = config.Has("resourcesDir") ? config.Get("resourcesDir").As<Napi::String>().Utf8Value() : "";
 
     g_engine = std::make_unique<SounderEngine>();
     g_engine->initialize(sr, bs, projDir);
+    if (!resDir.empty()) g_engine->setResourcesDir(resDir);
 
     return env.Undefined();
 }
@@ -228,8 +239,15 @@ static Napi::Value NapiRecord(const Napi::CallbackInfo& info) {
         return result;
     }
     // Ensure mic input is available if audio tracks are armed
-    if (!armedAudioIds.empty())
-        g_engine->getAudioGraph().ensureInputEnabled();
+    if (!armedAudioIds.empty()) {
+        bool inputOk = g_engine->getAudioGraph().ensureInputEnabled();
+        if (!inputOk) {
+            auto result = Napi::Object::New(info.Env());
+            result.Set("error", Napi::String::New(info.Env(),
+                "Microphone access denied. Grant permission in System Settings > Privacy & Security > Microphone."));
+            return result;
+        }
+    }
     // Set up recording buffers for both audio and MIDI
     g_engine->getTransport().record(armedAudioIds);
     if (!armedMidiIds.empty())
@@ -386,12 +404,15 @@ static Napi::Value NapiSetAudioRegion(const Napi::CallbackInfo& info) {
     double clipEnd = info[3].As<Napi::Number>().DoubleValue();
     bool loopEnabled = info[4].As<Napi::Boolean>().Value();
 
+    int loopCount = (info.Length() > 5) ? info[5].As<Napi::Number>().Int32Value() : 0;
+
     auto* t = g_engine->getAudioGraph().getTrack(trackId);
     if (t) {
         t->setRegionOffset(offset);
         t->setRegionClipStart(clipStart);
         t->setRegionClipEnd(clipEnd);
         t->setRegionLoopEnabled(loopEnabled);
+        t->setRegionLoopCount(loopCount);
     }
     return info.Env().Undefined();
 }
@@ -1512,6 +1533,7 @@ static Napi::Value NapiExportStems(const Napi::CallbackInfo& info) {
     exportOpts.filePrefix = opts.Has("filePrefix") ? opts.Get("filePrefix").As<Napi::String>().Utf8Value() : "";
     exportOpts.format = opts.Has("format") ? opts.Get("format").As<Napi::String>().Utf8Value() : "wav";
     exportOpts.mp3Bitrate = opts.Has("mp3Bitrate") ? opts.Get("mp3Bitrate").As<Napi::Number>().Int32Value() : 320;
+    exportOpts.normalize = opts.Has("normalize") ? opts.Get("normalize").As<Napi::Boolean>().Value() : false;
 
     if (exportOpts.outputDir.empty()) {
         auto r = Napi::Object::New(env);
@@ -1594,7 +1616,8 @@ static Napi::Value NapiExportMidiFile(const Napi::CallbackInfo& info) {
 
 // ── Beat Quantize ──
 
-static Napi::Value NapiQuantizeAudio(const Napi::CallbackInfo& info) {
+// Sync: detect source BPM, time-stretch entire region to match project BPM
+static Napi::Value NapiSyncAudio(const Napi::CallbackInfo& info) {
     auto env = info.Env();
     if (!g_engine || info.Length() < 1)
         return env.Null();
@@ -1641,6 +1664,49 @@ static Napi::Value NapiQuantizeAudio(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// Quantize: detect beats and snap them to a regular grid at the project BPM
+static Napi::Value NapiQuantizeAudio(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 1)
+        return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+
+    auto* track = g_engine->getAudioGraph().getTrack(trackId);
+    if (!track || !track->hasBuffer())
+        return env.Null();
+
+    // Read options
+    double gridDivision = 1.0;  // default: quarter note
+    float strength = 1.0f;      // default: full quantize
+    if (info.Length() > 1 && info[1].IsObject()) {
+        auto opts = info[1].As<Napi::Object>();
+        if (opts.Has("gridDivision"))
+            gridDivision = opts.Get("gridDivision").As<Napi::Number>().DoubleValue();
+        if (opts.Has("strength"))
+            strength = opts.Get("strength").As<Napi::Number>().FloatValue();
+    }
+
+    double bpm = g_engine->getMetronome().getBPM();
+    AudioTrack::QuantizeOptions qOpts { bpm, gridDivision, strength };
+    bool ok = track->quantizeAudio(qOpts);
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("ok", ok);
+    result.Set("bpm", bpm);
+
+    if (ok) {
+        result.Set("duration", track->getDuration());
+        auto waveform = track->getWaveformData(4000);
+        auto wfArr = Napi::Float32Array::New(env, waveform.size());
+        for (size_t i = 0; i < waveform.size(); i++)
+            wfArr[i] = waveform[i];
+        result.Set("waveform", wfArr);
+    }
+
+    return result;
+}
+
 // ── Stem Separation ──
 
 static Napi::Value NapiSeparateStems(const Napi::CallbackInfo& info) {
@@ -1656,22 +1722,26 @@ static Napi::Value NapiSeparateStems(const Napi::CallbackInfo& info) {
     // Lazy-load model
     static StemSeparator separator;
     if (!separator.isModelLoaded()) {
-        // Model path: look next to the .node binary, then in resources/models/
+        // Model path: search multiple locations
         std::string modelPath;
+        std::string resDir = g_engine->getResourcesDir();
         std::string projDir = g_engine->getProjectsDir();
-        // Try common locations
-        std::vector<std::string> searchPaths = {
-            projDir + "/../resources/models/htdemucs.onnx",
-            projDir + "/../../resources/models/htdemucs.onnx",
-            // For dev mode: relative to native/build
-            std::string(__FILE__).substr(0, std::string(__FILE__).rfind('/')) +
-                "/../../resources/models/htdemucs.onnx"
-        };
+        std::vector<std::string> searchPaths;
 
-        // Also check the app bundle resources path
+        // Primary: app resources directory (passed from Electron)
+        if (!resDir.empty()) {
+            searchPaths.push_back(resDir + "/models/htdemucs.onnx");
+        }
+        // Dev mode: relative to native source
+        searchPaths.push_back(
+            std::string(__FILE__).substr(0, std::string(__FILE__).rfind('/')) +
+                "/../../resources/models/htdemucs.onnx");
+        // Fallback: relative to projects dir
+        searchPaths.push_back(projDir + "/../resources/models/htdemucs.onnx");
+        searchPaths.push_back(projDir + "/../../resources/models/htdemucs.onnx");
+
         #ifdef __APPLE__
         {
-            // Check ~/Documents/Sounder/../models/ and standard app resource paths
             auto homeDir = juce::File::getSpecialLocation(
                 juce::File::userHomeDirectory);
             searchPaths.push_back(
@@ -2624,6 +2694,203 @@ static Napi::Value NapiInjectAudioBuffer(const Napi::CallbackInfo& info) {
     return result;
 }
 
+static Napi::Value NapiAppendAudioBuffer(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 4)
+        return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    auto floatArr = info[1].As<Napi::Float32Array>();
+    int sampleRate = info[2].As<Napi::Number>().Int32Value();
+    int numChannels = info[3].As<Napi::Number>().Int32Value();
+
+    size_t totalFloats = floatArr.ElementLength();
+    int numSamples = static_cast<int>(totalFloats / numChannels);
+
+    auto* t = g_engine->getAudioGraph().getTrack(trackId);
+    if (!t) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Track not found"));
+        return result;
+    }
+
+    auto buffer = std::make_unique<juce::AudioBuffer<float>>(numChannels, numSamples);
+    for (int ch = 0; ch < numChannels; ch++) {
+        float* dst = buffer->getWritePointer(ch);
+        const float* src = floatArr.Data() + ch * numSamples;
+        std::copy(src, src + numSamples, dst);
+    }
+
+    double appendOffset = t->appendBuffer(std::move(buffer), static_cast<double>(sampleRate));
+
+    double dur = t->getDuration();
+    if (dur > g_engine->getTransport().getTotalDuration())
+        g_engine->getTransport().setTotalDuration(dur);
+
+    auto result = Napi::Object::New(env);
+    result.Set("ok", true);
+    result.Set("duration", dur);
+    result.Set("appendOffset", appendOffset);
+    return result;
+}
+
+static Napi::Value NapiTransposeAudio(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 2)
+        return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    int semitones = info[1].As<Napi::Number>().Int32Value();
+    bool preserveTempo = info.Length() > 2 ? info[2].As<Napi::Boolean>().Value() : true;
+
+    auto* t = g_engine->getAudioGraph().getTrack(trackId);
+    if (!t || !t->hasBuffer()) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Track not found or empty"));
+        return result;
+    }
+
+    AudioTrack::TransposeOptions opts;
+    opts.semitones = semitones;
+    opts.preserveTempo = preserveTempo;
+    bool ok = t->transposeAudio(opts);
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("ok", ok);
+    if (ok) {
+        result.Set("duration", t->getDuration());
+        auto waveform = t->getWaveformData(4000);
+        auto wfArr = Napi::Float32Array::New(env, waveform.size());
+        for (size_t i = 0; i < waveform.size(); i++)
+            wfArr[i] = waveform[i];
+        result.Set("waveform", wfArr);
+    }
+    return result;
+}
+
+static Napi::Value NapiNormalizeAudio(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 1)
+        return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    float targetDb = info.Length() > 1 ? info[1].As<Napi::Number>().FloatValue() : 0.0f;
+
+    auto* t = g_engine->getAudioGraph().getTrack(trackId);
+    if (!t || !t->hasBuffer()) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Track not found or empty"));
+        return result;
+    }
+
+    bool ok = t->normalizeAudio(targetDb);
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("ok", ok);
+    if (ok) {
+        result.Set("duration", t->getDuration());
+        auto waveform = t->getWaveformData(4000);
+        auto wfArr = Napi::Float32Array::New(env, waveform.size());
+        for (size_t i = 0; i < waveform.size(); i++)
+            wfArr[i] = waveform[i];
+        result.Set("waveform", wfArr);
+    }
+    return result;
+}
+
+// ── Audio Snapshot (undo) ──
+
+static Napi::Value NapiSaveAudioSnapshot(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 1) return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    auto* t = g_engine->getAudioGraph().getTrack(trackId);
+    if (!t || !t->hasBuffer()) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Track not found or empty"));
+        return result;
+    }
+
+    const auto& srcBuf = t->getBuffer();
+    int numCh = srcBuf.getNumChannels();
+    int numSamples = srcBuf.getNumSamples();
+
+    AudioSnapshot snap;
+    snap.buffer = std::make_unique<juce::AudioBuffer<float>>(numCh, numSamples);
+    for (int ch = 0; ch < numCh; ch++)
+        snap.buffer->copyFrom(ch, 0, srcBuf, ch, 0, numSamples);
+    snap.sampleRate = t->getBufferSampleRate();
+
+    int id = g_nextSnapshotId++;
+    g_audioSnapshots[id] = std::move(snap);
+
+    auto result = Napi::Object::New(env);
+    result.Set("ok", true);
+    result.Set("snapshotId", id);
+    return result;
+}
+
+static Napi::Value NapiRestoreAudioSnapshot(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (!g_engine || info.Length() < 2) return env.Null();
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    int snapshotId = info[1].As<Napi::Number>().Int32Value();
+
+    auto* t = g_engine->getAudioGraph().getTrack(trackId);
+    if (!t) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Track not found"));
+        return result;
+    }
+
+    auto it = g_audioSnapshots.find(snapshotId);
+    if (it == g_audioSnapshots.end()) {
+        auto result = Napi::Object::New(env);
+        result.Set("error", std::string("Snapshot not found"));
+        return result;
+    }
+
+    // Copy the snapshot buffer (keep snapshot intact for potential redo)
+    const auto& snapBuf = *it->second.buffer;
+    int numCh = snapBuf.getNumChannels();
+    int numSamples = snapBuf.getNumSamples();
+    auto restored = std::make_unique<juce::AudioBuffer<float>>(numCh, numSamples);
+    for (int ch = 0; ch < numCh; ch++)
+        restored->copyFrom(ch, 0, snapBuf, ch, 0, numSamples);
+
+    t->setBuffer(std::move(restored), it->second.sampleRate);
+
+    double dur = t->getDuration();
+    if (dur > g_engine->getTransport().getTotalDuration())
+        g_engine->getTransport().setTotalDuration(dur);
+
+    // Return waveform data for UI refresh
+    auto waveform = t->getWaveformData(4000);
+    auto wfArr = Napi::Float32Array::New(env, waveform.size());
+    for (size_t i = 0; i < waveform.size(); i++)
+        wfArr[i] = waveform[i];
+
+    auto result = Napi::Object::New(env);
+    result.Set("ok", true);
+    result.Set("duration", dur);
+    result.Set("waveform", wfArr);
+    return result;
+}
+
+static Napi::Value NapiFreeAudioSnapshot(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (info.Length() < 1) return env.Null();
+
+    int snapshotId = info[0].As<Napi::Number>().Int32Value();
+    g_audioSnapshots.erase(snapshotId);
+
+    auto result = Napi::Object::New(env);
+    result.Set("ok", true);
+    return result;
+}
+
 // ── Module init ──
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -2738,9 +3005,20 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     exports.Set("separateStems", Napi::Function::New(env, NapiSeparateStems));
     exports.Set("quantizeAudio", Napi::Function::New(env, NapiQuantizeAudio));
+    exports.Set("syncAudio", Napi::Function::New(env, NapiSyncAudio));
 
     // AI Audio Injection (generation moved to JS/transformers.js)
     exports.Set("injectAudioBuffer", Napi::Function::New(env, NapiInjectAudioBuffer));
+    exports.Set("appendAudioBuffer", Napi::Function::New(env, NapiAppendAudioBuffer));
+
+    // Audio functions (transpose, normalize)
+    exports.Set("transposeAudio", Napi::Function::New(env, NapiTransposeAudio));
+    exports.Set("normalizeAudio", Napi::Function::New(env, NapiNormalizeAudio));
+
+    // Audio snapshots (undo)
+    exports.Set("saveAudioSnapshot", Napi::Function::New(env, NapiSaveAudioSnapshot));
+    exports.Set("restoreAudioSnapshot", Napi::Function::New(env, NapiRestoreAudioSnapshot));
+    exports.Set("freeAudioSnapshot", Napi::Function::New(env, NapiFreeAudioSnapshot));
 
     exports.Set("setMeterCallback", Napi::Function::New(env, NapiSetMeterCallback));
 

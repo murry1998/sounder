@@ -16,6 +16,7 @@ public:
 
     // Buffer management
     void setBuffer(std::unique_ptr<juce::AudioBuffer<float>> buffer, double fileSampleRate);
+    double appendBuffer(std::unique_ptr<juce::AudioBuffer<float>> newAudio, double newSampleRate);
     bool hasBuffer() const;
     const juce::AudioBuffer<float>& getBuffer() const { return *audioBuffer; }
     std::vector<float> getWaveformData(int numPoints) const;
@@ -46,15 +47,27 @@ public:
     bool tempoMatchAudio(double targetBPM, double& detectedBPM,
                          double manualSourceBPM = 0.0, double minBPM = 40.0, double maxBPM = 220.0);
 
+    // Transpose
+    struct TransposeOptions {
+        int semitones;           // -24 to +24
+        bool preserveTempo;      // false = speed change, true = pitch shift with time-stretch
+    };
+    bool transposeAudio(const TransposeOptions& options);
+
+    // Normalize
+    bool normalizeAudio(float targetPeakDb = 0.0f);
+
     // Region editing
     void setRegionOffset(double t);
     void setRegionClipStart(double t);
     void setRegionClipEnd(double t);
     void setRegionLoopEnabled(bool enabled);
+    void setRegionLoopCount(int count);
     double getRegionOffset() const { return regionOffset; }
     double getRegionClipStart() const { return regionClipStart; }
     double getRegionClipEnd() const { return regionClipEnd; }
     bool getRegionLoopEnabled() const { return regionLoopEnabled; }
+    int getRegionLoopCount() const { return regionLoopCount; }
 
     std::unique_ptr<juce::AudioBuffer<float>> extractBuffer(int startSample, int endSample);
     void trimBufferTo(int startSample, int endSample);
@@ -116,6 +129,7 @@ private:
     double regionClipStart = 0.0;    // seconds into buffer where playback begins
     double regionClipEnd = -1.0;     // seconds into buffer where playback ends (-1 = full)
     bool regionLoopEnabled = false;  // loop the clip during playback
+    int regionLoopCount = 0;         // 0 = infinite loop, >0 = finite repeat count
     double fadeInDuration = 0.0;     // seconds
     double fadeOutDuration = 0.0;    // seconds
 
@@ -133,6 +147,7 @@ private:
 
     // Insert slots (AudioProcessor* supports both VST and native)
     std::array<std::unique_ptr<juce::AudioProcessor>, MAX_INSERT_SLOTS> insertSlots;
+    juce::SpinLock insertLock;
     juce::AudioBuffer<float> pluginProcessBuffer;
     juce::MidiBuffer emptyMidiBuffer;
 

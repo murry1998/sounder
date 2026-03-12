@@ -59,11 +59,12 @@
       <button class="action-btn" id="btn-add-bus-track">+ Bus</button>
       <button class="action-btn" id="btn-import">Import</button>
       <button class="action-btn" id="btn-export">Export</button>
+      <button class="action-btn" id="btn-bounce">Bounce</button>
     </div>
     <div class="toolbar-sep"></div>
     <div class="toolbar-group">
-      <button class="action-btn" id="btn-save" title="Save Project (Cmd+S)">Save</button>
       <button class="action-btn" id="btn-projects" title="Open Project (Cmd+O)">Projects</button>
+      <button class="action-btn" id="btn-functions" title="Audio Functions">Functions</button>
       <button class="action-btn" id="btn-audio-settings" title="Audio &amp; MIDI Settings">Audio I/O</button>
       <button class="action-btn" id="btn-mixer" title="Open Mixer (X)">Mixer</button>
     </div>
@@ -395,9 +396,6 @@
           <option value="7">7</option>
         </select>
       </div>
-      <label class="ai-gen-checkbox">
-        <input type="checkbox" id="ai-midi-replace" checked> Replace existing notes
-      </label>
     </div>
     <div class="modal-actions">
       <button class="action-btn primary" id="btn-midi-ai-generate">Generate</button>
@@ -449,30 +447,26 @@
 <!-- Tempo Match Modal -->
 <div id="tempo-match-modal">
   <div id="tempo-match-card">
-    <h2>TEMPO MATCH</h2>
+    <h2>SYNC TO BPM</h2>
     <div class="modal-form-body">
+      <div class="audio-settings-row">
+        <label>Target BPM</label>
+        <input type="number" id="tm-target-bpm" min="20" max="300" value="120" step="0.1" readonly style="opacity:0.7">
+      </div>
       <div class="audio-settings-row">
         <label>Source BPM</label>
         <select id="tm-source-mode">
           <option value="auto" selected>Auto-detect</option>
-          <option value="manual">Manual</option>
+          <option value="manual">Enter manually</option>
         </select>
       </div>
       <div class="audio-settings-row" id="tm-manual-row" style="display:none">
-        <label>BPM</label>
+        <label>Source BPM</label>
         <input type="number" id="tm-manual-bpm" min="20" max="300" value="120" step="0.1">
-      </div>
-      <div class="audio-settings-row">
-        <label>Min BPM</label>
-        <input type="number" id="tm-min-bpm" min="20" max="300" value="40">
-      </div>
-      <div class="audio-settings-row">
-        <label>Max BPM</label>
-        <input type="number" id="tm-max-bpm" min="20" max="300" value="220">
       </div>
     </div>
     <div class="modal-actions">
-      <button class="action-btn primary" id="btn-tm-go">Go</button>
+      <button class="action-btn primary" id="btn-tm-go">Sync</button>
       <button class="action-btn" id="btn-tm-close">Close</button>
     </div>
   </div>
@@ -585,6 +579,131 @@
     <div class="stems-progress-title">Separating Stems...</div>
     <div class="stems-progress-bar"><div class="stems-progress-fill"></div></div>
     <div class="stems-progress-status">Processing audio with AI model</div>
+  </div>
+</div>
+
+<!-- Bounce Modal -->
+<div id="bounce-modal">
+  <div id="bounce-card">
+    <h2>BOUNCE</h2>
+    <div class="bounce-body">
+      <div class="audio-settings-row">
+        <label>Format</label>
+        <select id="bounce-format">
+          <option value="wav" selected>WAV</option>
+          <option value="aiff">AIFF</option>
+        </select>
+      </div>
+      <div class="audio-settings-row">
+        <label>Bit Depth</label>
+        <select id="bounce-bitdepth">
+          <option value="16">16-bit</option>
+          <option value="24" selected>24-bit</option>
+          <option value="32">32-bit float</option>
+        </select>
+      </div>
+      <label class="export-checkbox">
+        <input type="checkbox" id="bounce-mp3"> Also export as MP3
+      </label>
+      <div class="audio-settings-row" id="bounce-mp3-bitrate-row" style="display:none">
+        <label>MP3 Bitrate</label>
+        <select id="bounce-mp3-bitrate">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320" selected>320 kbps</option>
+        </select>
+      </div>
+      <label class="export-checkbox">
+        <input type="checkbox" id="bounce-normalize"> Normalize
+      </label>
+      <div id="bounce-progress" class="export-progress" style="display:none">
+        <div class="export-progress-bar"><div class="export-progress-fill" id="bounce-progress-fill"></div></div>
+        <div class="export-progress-text" id="bounce-progress-text">Bouncing...</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-do-bounce">Bounce</button>
+      <button class="action-btn" id="btn-close-bounce">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Transpose Modal -->
+<div id="transpose-modal">
+  <div id="transpose-card">
+    <h2>TRANSPOSE</h2>
+    <div class="transpose-body">
+      <div class="audio-settings-row">
+        <label>Semitones</label>
+        <div style="display:flex;align-items:center;gap:8px;flex:1">
+          <input type="range" id="transpose-semitones" min="-24" max="24" value="0" style="flex:1">
+          <span id="transpose-semitones-val" style="min-width:32px;text-align:center;font-weight:bold">0</span>
+        </div>
+      </div>
+      <div class="audio-settings-row">
+        <label>Mode</label>
+        <select id="transpose-mode">
+          <option value="speed">Speed change</option>
+          <option value="preserve" selected>Preserve tempo</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-do-transpose">Apply</button>
+      <button class="action-btn" id="btn-close-transpose">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Normalize Modal -->
+<div id="normalize-modal">
+  <div id="normalize-card">
+    <h2>NORMALIZE</h2>
+    <div class="normalize-body">
+      <div class="audio-settings-row">
+        <label>Target Peak</label>
+        <select id="normalize-target">
+          <option value="0" selected>0 dBFS (maximum)</option>
+          <option value="-1">-1 dBFS</option>
+          <option value="-3">-3 dBFS</option>
+          <option value="-6">-6 dBFS</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-do-normalize">Apply</button>
+      <button class="action-btn" id="btn-close-normalize">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Open Project Modal (recent files + browse) -->
+<div id="recent-files-modal">
+  <div id="recent-files-card">
+    <h2>OPEN PROJECT</h2>
+    <ul id="recent-files-list"></ul>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-recent-open-file">Browse...</button>
+      <button class="action-btn" id="btn-recent-new">New Project</button>
+      <button class="action-btn" id="btn-recent-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="save-name-modal">
+  <div id="save-name-card">
+    <h2>SAVE PROJECT</h2>
+    <div class="save-name-body">
+      <div class="audio-settings-row">
+        <label for="save-name-input">Project Name</label>
+        <input type="text" id="save-name-input" value="Untitled" spellcheck="false">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="action-btn primary" id="btn-do-save-name">Save</button>
+      <button class="action-btn" id="btn-cancel-save-name">Cancel</button>
+    </div>
   </div>
 </div>
 

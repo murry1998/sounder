@@ -254,12 +254,16 @@ bool FileIO::loadProject(const std::string& projectsDir, const std::string& proj
         timeSigNum = obj->getProperty("timeSignature");
         graph.setMasterVolume(obj->getProperty("masterVolume"));
 
-        // Load audio tracks
+        // Reset track ID counter before loading
+        graph.resetNextTrackId(0);
+
+        // Load audio tracks using original IDs from the project JSON
         if (auto* tracks = obj->getProperty("tracks").getArray()) {
             for (auto& trackVar : *tracks) {
                 if (auto* trackObj = trackVar.getDynamicObject()) {
                     std::string name = trackObj->getProperty("name").toString().toStdString();
-                    int id = graph.addTrack(name);
+                    int originalId = (int)trackObj->getProperty("id");
+                    int id = graph.addTrackWithId(originalId, name);
                     auto* track = graph.getTrack(id);
                     if (track) {
                         track->setVolume(trackObj->getProperty("volume"));
@@ -296,12 +300,13 @@ bool FileIO::loadProject(const std::string& projectsDir, const std::string& proj
             }
         }
 
-        // Load MIDI tracks
+        // Load MIDI tracks using original IDs from the project JSON
         if (auto* midiTracks = obj->getProperty("midiTracks").getArray()) {
             for (auto& mtVar : *midiTracks) {
                 if (auto* mtObj = mtVar.getDynamicObject()) {
                     std::string name = mtObj->getProperty("name").toString().toStdString();
-                    int id = graph.addMidiTrack(name);
+                    int originalId = (int)mtObj->getProperty("id");
+                    int id = graph.addMidiTrackWithId(originalId, name);
                     auto* mtrack = graph.getMidiTrack(id);
                     if (!mtrack) continue;
 

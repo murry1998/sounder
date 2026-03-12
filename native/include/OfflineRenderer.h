@@ -17,6 +17,7 @@ struct ExportOptions {
     double startTime = 0.0;
     double endTime = 0.0;        // 0 = auto (use longest track)
     std::string filePrefix;      // prefix for stem files
+    bool normalize = false;      // normalize output to 0 dBFS
 };
 
 struct ExportProgress {

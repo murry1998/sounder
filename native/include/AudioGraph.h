@@ -27,15 +27,20 @@ public:
 
     // Audio tracks
     int addTrack(const std::string& name);
+    int addTrackWithId(int id, const std::string& name);  // Force specific ID (for project loading)
     void removeTrack(int trackId);
     AudioTrack* getTrack(int trackId);
     const std::map<int, std::unique_ptr<AudioTrack>>& getTracks() const { return tracks; }
 
     // MIDI tracks
     int addMidiTrack(const std::string& name);
+    int addMidiTrackWithId(int id, const std::string& name);  // Force specific ID (for project loading)
     void removeMidiTrack(int trackId);
     MidiTrack* getMidiTrack(int trackId);
     const std::map<int, std::unique_ptr<MidiTrack>>& getMidiTracks() const { return midiTracks; }
+
+    // Reset track ID counter (call after clearing all tracks, before loading a project)
+    void resetNextTrackId(int id = 0) { nextTrackId = id; }
 
     // Bus tracks
     int addBusTrack(const std::string& name);

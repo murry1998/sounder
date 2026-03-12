@@ -27,10 +27,12 @@ contextBridge.exposeInMainWorld('sounderEngine', {
   separateStems: (trackId, options) => ipcRenderer.invoke('engine:separateStems', trackId, options),
   quantizeAudio: (trackId, options) =>
     ipcRenderer.invoke('engine:quantizeAudio', trackId, options),
+  syncAudio: (trackId, options) =>
+    ipcRenderer.invoke('engine:syncAudio', trackId, options),
 
   // Audio Region
-  setAudioRegion: (trackId, offset, clipStart, clipEnd, loopEnabled) =>
-    ipcRenderer.invoke('engine:setAudioRegion', trackId, offset, clipStart, clipEnd, loopEnabled),
+  setAudioRegion: (trackId, offset, clipStart, clipEnd, loopEnabled, loopCount) =>
+    ipcRenderer.invoke('engine:setAudioRegion', trackId, offset, clipStart, clipEnd, loopEnabled, loopCount || 0),
   splitAudioTrack: (trackId, splitTime) =>
     ipcRenderer.invoke('engine:splitAudioTrack', trackId, splitTime),
   duplicateAudioTrack: (trackId) =>
@@ -78,6 +80,22 @@ contextBridge.exposeInMainWorld('sounderEngine', {
   // AI Audio Injection (generation via transformers.js)
   injectAudioBuffer: (trackId, waveform, sampleRate, numChannels) =>
     ipcRenderer.invoke('engine:injectAudioBuffer', trackId, waveform, sampleRate, numChannels),
+  appendAudioBuffer: (trackId, waveform, sampleRate, numChannels) =>
+    ipcRenderer.invoke('engine:appendAudioBuffer', trackId, waveform, sampleRate, numChannels),
+
+  // Audio functions
+  transposeAudio: (trackId, semitones, preserveTempo) =>
+    ipcRenderer.invoke('engine:transposeAudio', trackId, semitones, preserveTempo),
+  normalizeAudio: (trackId, targetDb) =>
+    ipcRenderer.invoke('engine:normalizeAudio', trackId, targetDb),
+
+  // Audio snapshots (undo)
+  saveAudioSnapshot: (trackId) =>
+    ipcRenderer.invoke('engine:saveAudioSnapshot', trackId),
+  restoreAudioSnapshot: (trackId, snapshotId) =>
+    ipcRenderer.invoke('engine:restoreAudioSnapshot', trackId, snapshotId),
+  freeAudioSnapshot: (snapshotId) =>
+    ipcRenderer.invoke('engine:freeAudioSnapshot', snapshotId),
 
   // AI Audio Generation (transformers.js, bundled models)
   getAIModels: () => ipcRenderer.invoke('ai:getModels'),
@@ -86,6 +104,11 @@ contextBridge.exposeInMainWorld('sounderEngine', {
   cancelAIGeneration: () => ipcRenderer.invoke('ai:cancelGeneration'),
   onAIGenerateProgress: (callback) => {
     ipcRenderer.on('ai:generateProgress', (_e, data) => callback(data));
+  },
+  getMissingModels: () => ipcRenderer.invoke('ai:getMissingModels'),
+  downloadAIModels: (modelId) => ipcRenderer.invoke('ai:downloadModels', modelId),
+  onAIDownloadProgress: (callback) => {
+    ipcRenderer.on('ai:downloadProgress', (_e, data) => callback(data));
   },
 
   // Built-in Instrument Parameters
@@ -230,11 +253,17 @@ contextBridge.exposeInMainWorld('sounderEngine', {
   // File I/O
   saveProject: (name) => ipcRenderer.invoke('project:save', name),
   loadProject: (projectId) => ipcRenderer.invoke('project:load', projectId),
+  saveProjectFile: (name) => ipcRenderer.invoke('project:saveFile', name),
+  saveProjectFileToPath: (name, filePath) => ipcRenderer.invoke('project:saveFileToPath', name, filePath),
+  openProjectFile: () => ipcRenderer.invoke('project:openFile'),
+  openFilePath: (filePath) => ipcRenderer.invoke('project:openFilePath', filePath),
   listProjects: () => ipcRenderer.invoke('project:list'),
   deleteProject: (projectId) => ipcRenderer.invoke('project:delete', projectId),
+  getRecentFiles: () => ipcRenderer.invoke('project:getRecentFiles'),
   exportWAV: () => ipcRenderer.invoke('project:exportWAV'),
   exportAIFF: () => ipcRenderer.invoke('project:exportAIFF'),
   exportStems: (options) => ipcRenderer.invoke('project:exportStems', options),
+  bounceProject: (options) => ipcRenderer.invoke('project:bounce', options),
   importMidiFile: (trackId) => ipcRenderer.invoke('midi:importFile', trackId),
   exportMidiFile: (trackId) => ipcRenderer.invoke('midi:exportFile', trackId),
   importAudioFile: () => ipcRenderer.invoke('project:importAudioFile'),

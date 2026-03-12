@@ -25,6 +25,8 @@ public:
     MidiInputManager& getMidiInput() { return *midiInput; }
 
     const std::string& getProjectsDir() const { return projectsDir; }
+    const std::string& getResourcesDir() const { return resourcesDir; }
+    void setResourcesDir(const std::string& dir) { resourcesDir = dir; }
     double getSampleRate() const { return sampleRate; }
     int getBlockSize() const { return blockSize; }
     bool isRunning() const { return running.load(); }
@@ -37,6 +39,7 @@ private:
     std::unique_ptr<MidiInputManager> midiInput;
     std::atomic<bool> running{false};
     std::string projectsDir;
+    std::string resourcesDir;
     double sampleRate = 48000.0;
     int blockSize = 512;
 };

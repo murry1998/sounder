@@ -1,6 +1,6 @@
 {
   "name": "sounder",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "description": "Sounder -- Desktop DAW with native audio engine, AI music generation, stem separation, and VST3/AU plugin hosting",
   "main": "src/main/main.js",
   "scripts": {
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
+    "adm-zip": "^0.5.16",
     "cmake-js": "^7.3.0",
     "node-addon-api": "^8.0.0",
     "onnxruntime-node": "^1.24.2"

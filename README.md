@@ -1,5 +1,7 @@
 # Sounder
 
+> **Beta Release** -- Sounder is under active development. Core audio, MIDI, mixing, and plugin hosting are functional. AI features (MusicGen, stem separation) work but may have rough edges. Expect bugs. [Report issues here.](https://github.com/murry1998/sounder/issues)
+
 A desktop DAW (Digital Audio Workstation) built with Electron and a native C++ audio engine powered by JUCE. Features AI music generation, stem separation, VST3/AU plugin hosting, and a full suite of built-in effects and instruments.
 
 ## Features
@@ -15,7 +17,10 @@ A desktop DAW (Digital Audio Workstation) built with Electron and a native C++ a
 - MIDI recording from hardware controllers
 - Audio region editing (clip, loop, fade in/out)
 - Track splitting and duplication
-- Beat quantization and tempo matching
+- Sync to BPM (time-stretch audio to match project tempo without pitch change)
+- Quantize (snap detected beats to a regular grid)
+- Transpose (pitch shift with optional tempo preservation)
+- Normalize (peak level adjustment)
 - Undo/redo (100-action history)
 
 **Mixing**
@@ -58,7 +63,7 @@ A desktop DAW (Digital Audio Workstation) built with Electron and a native C++ a
 - Import: WAV, AIFF, MP3, FLAC, OGG, M4A, MIDI
 - Export: WAV (16/24/32-bit), AIFF, MP3 (128-320 kbps), MIDI
 - Per-track stem export
-- JSON project save/load
+- Project save/load (.sounder format with embedded audio)
 
 **MIDI**
 - Piano roll editor with grid snapping

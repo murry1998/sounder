@@ -64,6 +64,10 @@ public:
         double maxBPM = 220.0
     );
 
+    // Public WSOLA stretch (also used by AudioTrack for pitch-preserving transpose)
+    juce::AudioBuffer<float> wsolaStretch(
+        const juce::AudioBuffer<float>& sourceSegment, int targetLength);
+
 private:
     static constexpr int FFT_ORDER = 10;
     static constexpr int FFT_SIZE = 1 << FFT_ORDER; // 1024
@@ -71,8 +75,8 @@ private:
     static constexpr float ONSET_THRESHOLD_MULTIPLIER = 1.15f;
     static constexpr int MEDIAN_WINDOW = 15;
     static constexpr int MIN_ONSET_DISTANCE_MS = 40;
-    static constexpr int WSOLA_WINDOW_SIZE = 1024;
-    static constexpr int WSOLA_TOLERANCE = 256;
+    static constexpr int WSOLA_WINDOW_SIZE = 8192;
+    static constexpr int WSOLA_TOLERANCE = 4096;
 
     juce::dsp::FFT fft{FFT_ORDER};
     std::vector<float> window;
@@ -89,9 +93,6 @@ private:
         std::vector<OnsetInfo>& onsets,
         double sampleRate, double bpm,
         double gridDivision, float strength);
-
-    juce::AudioBuffer<float> wsolaStretch(
-        const juce::AudioBuffer<float>& sourceSegment, int targetLength);
 
     int findBestOverlap(
         const float* regionA, const float* regionB,

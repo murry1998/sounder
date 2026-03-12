@@ -71,6 +71,12 @@ int AudioGraph::addTrack(const std::string& name) {
     return id;
 }
 
+int AudioGraph::addTrackWithId(int id, const std::string& name) {
+    tracks[id] = std::make_unique<AudioTrack>(id, name, currentSampleRate, currentBlockSize);
+    if (id >= nextTrackId) nextTrackId = id + 1;
+    return id;
+}
+
 void AudioGraph::removeTrack(int trackId) {
     tracks.erase(trackId);
 }
@@ -85,6 +91,12 @@ AudioTrack* AudioGraph::getTrack(int trackId) {
 int AudioGraph::addMidiTrack(const std::string& name) {
     int id = nextTrackId++;
     midiTracks[id] = std::make_unique<MidiTrack>(id, name, currentSampleRate, currentBlockSize);
+    return id;
+}
+
+int AudioGraph::addMidiTrackWithId(int id, const std::string& name) {
+    midiTracks[id] = std::make_unique<MidiTrack>(id, name, currentSampleRate, currentBlockSize);
+    if (id >= nextTrackId) nextTrackId = id + 1;
     return id;
 }
 

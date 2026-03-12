@@ -36,9 +36,14 @@ class UndoManager {
       return;
     }
     this.undoStack.push(command);
+    // Destroy discarded redo commands to free native memory
+    for (const cmd of this.redoStack) {
+      if (cmd.destroy) cmd.destroy();
+    }
     this.redoStack.length = 0;
     if (this.undoStack.length > this.maxHistory) {
-      this.undoStack.shift();
+      const evicted = this.undoStack.shift();
+      if (evicted && evicted.destroy) evicted.destroy();
     }
   }
 
@@ -51,9 +56,13 @@ class UndoManager {
     }
     await command.execute();
     this.undoStack.push(command);
+    for (const cmd of this.redoStack) {
+      if (cmd.destroy) cmd.destroy();
+    }
     this.redoStack.length = 0;
     if (this.undoStack.length > this.maxHistory) {
-      this.undoStack.shift();
+      const evicted = this.undoStack.shift();
+      if (evicted && evicted.destroy) evicted.destroy();
     }
   }
 
@@ -107,6 +116,12 @@ class UndoManager {
   canRedo() { return this.redoStack.length > 0; }
 
   clear() {
+    for (const cmd of this.undoStack) {
+      if (cmd.destroy) cmd.destroy();
+    }
+    for (const cmd of this.redoStack) {
+      if (cmd.destroy) cmd.destroy();
+    }
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this._batchDepth = 0;
@@ -325,6 +340,39 @@ class SnapshotNotesCommand {
       })),
       true
     );
+  }
+}
+
+// ─── AudioSnapshotCommand (undo for transpose, normalize, quantize) ─
+class AudioSnapshotCommand {
+  constructor(engine, trackId, beforeSnapshotId, afterSnapshotId, label) {
+    this.engine = engine;
+    this.trackId = trackId;
+    this.beforeSnapshotId = beforeSnapshotId;
+    this.afterSnapshotId = afterSnapshotId;
+    this.label = label || 'Audio Edit';
+  }
+
+  async execute() { /* already executed before push */ }
+
+  async undo() {
+    return await this.engine.restoreAudioSnapshot(this.trackId, this.beforeSnapshotId);
+  }
+
+  async redo() {
+    return await this.engine.restoreAudioSnapshot(this.trackId, this.afterSnapshotId);
+  }
+
+  // Free native memory when this command is discarded
+  async destroy() {
+    if (this.beforeSnapshotId) {
+      await this.engine.freeAudioSnapshot(this.beforeSnapshotId);
+      this.beforeSnapshotId = null;
+    }
+    if (this.afterSnapshotId) {
+      await this.engine.freeAudioSnapshot(this.afterSnapshotId);
+      this.afterSnapshotId = null;
+    }
   }
 }
 

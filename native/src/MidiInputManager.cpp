@@ -11,9 +11,7 @@ MidiInputManager::~MidiInputManager() {
 std::vector<MidiInputManager::MidiDeviceInfo> MidiInputManager::getAvailableDevices() const {
     std::vector<MidiDeviceInfo> result;
     auto devices = juce::MidiInput::getAvailableDevices();
-    fprintf(stderr, "[MIDI] getAvailableDevices found %d device(s)\n", (int)devices.size());
     for (auto& d : devices) {
-        fprintf(stderr, "[MIDI]   - %s (%s)\n", d.name.toRawUTF8(), d.identifier.toRawUTF8());
         MidiDeviceInfo info;
         info.name = d.name.toStdString();
         info.identifier = d.identifier.toStdString();

@@ -9,6 +9,23 @@ const undoManager = new UndoManager(100);
 pianoRoll.undoManager = undoManager;
 
 // ─── Undo / Redo ─────────────────────────────────────────
+async function refreshAudioTrackWaveforms() {
+  for (const track of tracks) {
+    if (track.type !== 'audio' || !track.hasBuff) continue;
+    const wf = await engine.getTrackWaveform(track.id, 4000);
+    if (wf && wf.data && wf.data.length > 0) {
+      track.waveformData = new Float32Array(wf.data);
+      track.duration = wf.duration || track.duration;
+      // Update region clip end if it existed
+      if (track.regions && track.regions.length > 0) {
+        track.regions[0].clipEnd = track.duration;
+        track.regions[0].duration = track.duration;
+        track.regions[0].waveformData = track.waveformData;
+      }
+    }
+  }
+}
+
 async function performUndo() {
   const did = await undoManager.undo();
   if (!did) return;
@@ -25,6 +42,8 @@ async function performUndo() {
       renderMidiTrackPreview(track);
     }
   }
+  // Refresh audio track waveforms (for audio function undo)
+  await refreshAudioTrackWaveforms();
   renderAllTracks();
 }
 
@@ -42,6 +61,7 @@ async function performRedo() {
       renderMidiTrackPreview(track);
     }
   }
+  await refreshAudioTrackWaveforms();
   renderAllTracks();
 }
 
@@ -263,6 +283,17 @@ let followPlayhead = false;
 let clipboard = null;
 let selectedTrack = null;
 let selectedRegionIndex = 0;
+let allRegionsSelected = false;
+
+function highlightAllRegions(track) {
+  // Remove existing region selection highlights
+  document.querySelectorAll('.audio-region.selected, .midi-region.selected').forEach(el => el.classList.remove('selected'));
+  // Find the track row and highlight all regions in it
+  const trackRow = document.querySelector(`.track-row[data-track-id="${track.id}"]`);
+  if (trackRow) {
+    trackRow.querySelectorAll('.audio-region, .midi-region').forEach(el => el.classList.add('selected'));
+  }
+}
 
 // ─── Sub-Track Sync (propagate params to all native sub-tracks) ──
 async function syncSubTrackParams(track) {
@@ -866,7 +897,7 @@ function computeAudioRegion(track) {
 async function syncAudioRegionToNative(track) {
   for (const r of (track.regions || [])) {
     const nId = r.nativeTrackId || track.id;
-    await engine.setAudioRegion(nId, r.offset, r.clipStart, r.clipEnd, r.loopEnabled);
+    await engine.setAudioRegion(nId, r.offset, r.clipStart, r.clipEnd, r.loopEnabled, r.loopCount || 0);
     await engine.setAudioFades(nId, r.fadeIn || 0, r.fadeOut || 0);
   }
 }
@@ -986,6 +1017,7 @@ function bindAudioRegionMoveDrag(regionEl, track, waveformEl, pxPerSec, regionIn
         // Select this track/region
         selectedTrack = track;
         selectedRegionIndex = regionIndex;
+        allRegionsSelected = false;
         document.querySelectorAll('.audio-region.selected, .midi-region.selected').forEach(el => el.classList.remove('selected'));
         document.querySelectorAll('.track-row.selected').forEach(el => el.classList.remove('selected'));
         regionEl.classList.add('selected');
@@ -1317,10 +1349,9 @@ function showAudioRegionContextMenu(e, track, waveformEl, regionIndex) {
     menu.appendChild(el);
   }
 
-  const rect = waveformEl.getBoundingClientRect();
-  menu.style.left = (e.clientX - rect.left) + 'px';
-  menu.style.top = (e.clientY - rect.top) + 'px';
-  waveformEl.appendChild(menu);
+  menu.style.left = e.clientX + 'px';
+  menu.style.top = e.clientY + 'px';
+  document.body.appendChild(menu);
 
   const dismiss = (ev) => {
     if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', dismiss); }
@@ -1553,6 +1584,7 @@ function bindRegionMoveDrag(regionEl, track, waveformEl, pxPerBeat, regionIndex)
         // Select this track/region
         selectedTrack = track;
         selectedRegionIndex = regionIndex;
+        allRegionsSelected = false;
         document.querySelectorAll('.audio-region.selected, .midi-region.selected').forEach(el => el.classList.remove('selected'));
         document.querySelectorAll('.track-row.selected').forEach(el => el.classList.remove('selected'));
         regionEl.classList.add('selected');
@@ -2020,15 +2052,15 @@ function renderAllTracks() {
          <button class="track-btn solo-btn ${track.solo?'active':''}" data-action="solo" title="Solo">S</button>
          <button class="track-btn inst-btn" data-action="instrument" title="Instrument">INST</button>
          <button class="track-btn edit-btn" data-action="edit-midi" title="Open Piano Roll">EDIT</button>
-         <button class="track-btn ai-btn" data-action="ai-generate" title="AI Generate">AI</button>
+         <button class="track-btn" data-action="midi-split-at-playhead" title="Split at Playhead">&#9986;</button>
+         <button class="track-btn ai-btn" data-action="midi-ai-generate" title="AI MIDI Generate">AI</button>
          <button class="track-btn delete-btn" data-action="delete" title="Delete">&#215;</button>`
       : `<button class="track-btn arm-btn ${track.armed?'active':''}" data-action="arm" title="Arm">R</button>
          <button class="track-btn mute-btn ${track.muted?'active':''}" data-action="mute" title="Mute">M</button>
          <button class="track-btn solo-btn ${track.solo?'active':''}" data-action="solo" title="Solo">S</button>
          <button class="track-btn" data-action="split-at-playhead" title="Split at Playhead">&#9986;</button>
          <button class="track-btn stems-btn" data-action="split-stems" title="Split into Stems">Stems</button>
-         <button class="track-btn" data-action="tempo-match" title="Match to Project BPM">Q</button>
-         <button class="track-btn ai-btn" data-action="ai-generate" title="AI Generate">AI</button>
+         <button class="track-btn ai-btn" data-action="audio-ai-generate" title="AI Audio Generate">AI</button>
          <button class="track-btn delete-btn" data-action="delete" title="Delete">&#215;</button>`;
 
     const typeLabel = isMidi ? '<span class="track-type-badge midi">MIDI</span>' : '';
@@ -2135,6 +2167,8 @@ function renderAllTracks() {
       if (instParamBtn) instParamBtn.onclick = (e) => { e.stopPropagation(); openInstParamPanel(track); };
       const instEditorBtn = row.querySelector('[data-action="open-inst-editor"]');
       if (instEditorBtn) instEditorBtn.onclick = (e) => { e.stopPropagation(); engine.openMidiInstrumentEditor(track.id); };
+      const midiSplitBtn = row.querySelector('[data-action="midi-split-at-playhead"]');
+      if (midiSplitBtn) midiSplitBtn.onclick = () => splitMidiAtPlayhead(track);
     } else {
       const splitBtn = row.querySelector('[data-action="split-at-playhead"]');
       if (splitBtn) splitBtn.onclick = () => splitAudioAtPlayhead(track);
@@ -2143,14 +2177,18 @@ function renderAllTracks() {
       if (stemsBtn) stemsBtn.onclick = () => openStemsModal(track);
 
       const qBtn = row.querySelector('[data-action="tempo-match"]');
-      if (qBtn) qBtn.onclick = () => openTempoMatchModal(track);
+      if (qBtn) qBtn.onclick = () => openSyncModal(track);
     }
-    // AI Generate button (both MIDI and audio tracks)
-    const aiBtn = row.querySelector('[data-action="ai-generate"]');
-    if (aiBtn) {
-      aiBtn.onclick = () => {
-        if (isMidi) openMidiAIModal(track);
-        else openAudioAIModal(track);
+    // AI Generate buttons - separate actions for MIDI and audio tracks
+    const midiAiBtn = row.querySelector('[data-action="midi-ai-generate"]');
+    if (midiAiBtn) {
+      midiAiBtn.onclick = () => openMidiAIModal(track);
+    }
+    const audioAiBtn = row.querySelector('[data-action="audio-ai-generate"]');
+    if (audioAiBtn) {
+      audioAiBtn.onclick = () => {
+        if (track.type === 'midi') { setStatus('Audio AI is not available on MIDI tracks.'); return; }
+        openAudioAIModal(track);
       };
     }
     row.querySelector('[data-action="delete"]').onclick = async () => {
@@ -2195,18 +2233,22 @@ function renderAllTracks() {
     };
     row.querySelector('.track-waveform').onclick = e => {
       selectedTrack = track;
-      selectedRegionIndex = 0;
+      selectedRegionIndex = -1;
+      allRegionsSelected = true;
       document.querySelectorAll('.track-row.selected').forEach(el => el.classList.remove('selected'));
       row.classList.add('selected');
+      highlightAllRegions(track);
       const rect = e.currentTarget.getBoundingClientRect();
       seekTo(scrollOffset + (e.clientX - rect.left) / zoomLevel);
     };
     row.querySelector('.track-info').addEventListener('mousedown', (ev) => {
       if (ev.target.closest('button, input, select, .insert-slot')) return;
       selectedTrack = track;
-      selectedRegionIndex = 0;
+      selectedRegionIndex = -1;
+      allRegionsSelected = true;
       document.querySelectorAll('.track-row.selected').forEach(el => el.classList.remove('selected'));
       row.classList.add('selected');
+      highlightAllRegions(track);
     });
     if (isMidi) {
       row.querySelector('.track-waveform').ondblclick = () => {
@@ -3156,7 +3198,7 @@ async function openInsertPickerModal(track, slotIndex) {
       // Refresh the insert chain on the track row (not for master)
       if (insertPickerTarget.type !== 'master') {
         const row = document.querySelector(`.track-row[data-id="${insertPickerTarget.id}"]`);
-        if (row) refreshInsertChain(row, insertPickerTarget);
+        if (row) await refreshInsertChain(row, insertPickerTarget);
       }
       // Refresh mixer inserts
       if (typeof mixerBoard !== 'undefined' && mixerBoard.isOpen) {
@@ -3235,12 +3277,18 @@ function renderInsertVstList(effects, filter) {
         } catch (e) { /* editor open is best-effort */ }
       }
       document.getElementById('insert-picker-modal').classList.remove('open');
-      if (insertPickerTarget.type !== 'master') {
-        const row = document.querySelector(`.track-row[data-id="${insertPickerTarget.id}"]`);
-        if (row) refreshInsertChain(row, insertPickerTarget);
+      const _pickerTrack = insertPickerTarget;
+      if (_pickerTrack.type !== 'master') {
+        const row = document.querySelector(`.track-row[data-id="${_pickerTrack.id}"]`);
+        if (row) {
+          await refreshInsertChain(row, _pickerTrack);
+          // Re-refresh after short delay for async VST loads that may resolve late
+          setTimeout(() => refreshInsertChain(row, _pickerTrack), 500);
+        }
       }
       if (typeof mixerBoard !== 'undefined' && mixerBoard.isOpen) {
         mixerBoard._loadAllInserts();
+        setTimeout(() => mixerBoard._loadAllInserts(), 500);
       }
     };
     list.appendChild(li);
@@ -3479,7 +3527,14 @@ document.getElementById('btn-import').onclick = async () => {
               eqLowGain: 0, eqMidGain: 0, eqMidFreq: 1000, eqHighGain: 0,
               compThreshold: -24, compRatio: 4, compAttack: 0.003, compRelease: 0.25,
               delayTime: 0, delayMix: 0, delayFeedback: 0.3 },
-        plugins: []
+        plugins: [],
+        regions: [], _hiddenNativeIds: [],
+        get region() { return this.regions[0] || null; },
+        set region(v) {
+          if (v === null) { this.regions = []; }
+          else if (this.regions.length === 0) { this.regions.push(v); }
+          else { this.regions[0] = v; }
+        }
       };
       trackIdCounter = Math.max(trackIdCounter, imported.trackId + 1);
       tracks.push(track);
@@ -3494,6 +3549,8 @@ document.getElementById('btn-import').onclick = async () => {
     }
   }
   renderAllTracks();
+  // Re-render after layout settles to ensure waveform canvases have dimensions
+  setTimeout(() => renderAllTracks(), 100);
   setStatus('Imported audio');
 };
 
@@ -3564,15 +3621,278 @@ document.getElementById('export-modal').onclick = e => {
 };
 
 
-// ─── Tempo Match Modal ──
+// ─── Bounce Modal ──
+document.getElementById('btn-bounce').onclick = () => {
+  if (tracks.length === 0) { setStatus('Nothing to bounce.'); return; }
+  document.getElementById('bounce-progress').style.display = 'none';
+  document.getElementById('btn-do-bounce').disabled = false;
+  document.getElementById('bounce-modal').classList.add('open');
+};
+
+document.getElementById('bounce-mp3').onchange = () => {
+  document.getElementById('bounce-mp3-bitrate-row').style.display =
+    document.getElementById('bounce-mp3').checked ? '' : 'none';
+};
+
+document.getElementById('btn-do-bounce').onclick = async () => {
+  const format = document.getElementById('bounce-format').value;
+  const bitDepth = parseInt(document.getElementById('bounce-bitdepth').value);
+  const alsoMp3 = document.getElementById('bounce-mp3').checked;
+  const mp3Bitrate = parseInt(document.getElementById('bounce-mp3-bitrate').value);
+  const normalize = document.getElementById('bounce-normalize').checked;
+
+  const bounceBtn = document.getElementById('btn-do-bounce');
+  const progressDiv = document.getElementById('bounce-progress');
+  const progressFill = document.getElementById('bounce-progress-fill');
+  const progressText = document.getElementById('bounce-progress-text');
+
+  bounceBtn.disabled = true;
+  progressDiv.style.display = '';
+  progressFill.style.width = '50%';
+  progressText.textContent = 'Bouncing...';
+
+  const result = await engine.bounceProject({ format, bitDepth, alsoMp3, mp3Bitrate, normalize });
+
+  if (result && result.canceled) {
+    progressDiv.style.display = 'none';
+    bounceBtn.disabled = false;
+    setStatus('Bounce canceled.');
+  } else if (result && !result.ok) {
+    progressText.textContent = `Error: ${result.error}`;
+    bounceBtn.disabled = false;
+    setStatus('Bounce failed.');
+  } else {
+    progressFill.style.width = '100%';
+    let msg = 'Bounce complete!';
+    if (result.mp3Path) msg += ' (+ MP3)';
+    progressText.textContent = msg;
+    setStatus(`Bounced: ${result.path}`);
+  }
+};
+
+document.getElementById('btn-close-bounce').onclick = () => {
+  document.getElementById('bounce-modal').classList.remove('open');
+};
+document.getElementById('bounce-modal').onclick = e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+};
+
+// ─── Functions Dropdown ──
+let _functionsDropdown = null;
+
+function closeFunctionsDropdown() {
+  if (_functionsDropdown) {
+    _functionsDropdown.remove();
+    _functionsDropdown = null;
+  }
+  document.removeEventListener('click', _functionsOutsideClick);
+}
+
+function _functionsOutsideClick(e) {
+  if (_functionsDropdown && !_functionsDropdown.contains(e.target) && e.target.id !== 'btn-functions') {
+    closeFunctionsDropdown();
+  }
+}
+
+document.getElementById('btn-functions').onclick = (e) => {
+  if (_functionsDropdown) { closeFunctionsDropdown(); return; }
+
+  const btn = e.currentTarget;
+  const rect = btn.getBoundingClientRect();
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'functions-dropdown';
+  dropdown.style.left = rect.left + 'px';
+  dropdown.style.top = (rect.bottom + 4) + 'px';
+
+  const items = [
+    { label: 'Transpose', action: 'transpose' },
+    { label: 'Normalize', action: 'normalize' },
+    { label: 'Sync to BPM', action: 'sync' },
+    { label: 'Quantize', action: 'quantize' }
+  ];
+
+  for (const item of items) {
+    const btn = document.createElement('button');
+    btn.className = 'functions-dropdown-item';
+    btn.textContent = item.label;
+    btn.onclick = () => {
+      closeFunctionsDropdown();
+      if (item.action === 'transpose') openTransposeModal();
+      else if (item.action === 'normalize') openNormalizeModal();
+      else if (item.action === 'sync') openSyncFromFunctions();
+      else if (item.action === 'quantize') openQuantizeFromFunctions();
+    };
+    dropdown.appendChild(btn);
+  }
+
+  document.body.appendChild(dropdown);
+  _functionsDropdown = dropdown;
+  setTimeout(() => document.addEventListener('click', _functionsOutsideClick), 0);
+};
+
+// ─── Transpose Modal ──
+function openTransposeModal() {
+  if (!selectedTrack || selectedTrack.type !== 'audio' || !selectedTrack.hasBuff) {
+    setStatus('Select an audio track with audio first.');
+    return;
+  }
+  document.getElementById('transpose-semitones').value = 0;
+  document.getElementById('transpose-semitones-val').textContent = '0';
+  document.getElementById('transpose-modal').classList.add('open');
+}
+
+document.getElementById('transpose-semitones').oninput = (e) => {
+  const val = parseInt(e.target.value);
+  document.getElementById('transpose-semitones-val').textContent = (val > 0 ? '+' : '') + val;
+};
+
+document.getElementById('btn-do-transpose').onclick = async () => {
+  if (!selectedTrack || selectedTrack.type !== 'audio') return;
+  const semitones = parseInt(document.getElementById('transpose-semitones').value);
+  const preserveTempo = document.getElementById('transpose-mode').value === 'preserve';
+
+  if (semitones === 0) {
+    document.getElementById('transpose-modal').classList.remove('open');
+    return;
+  }
+
+  setStatus('Transposing audio...');
+  document.getElementById('btn-do-transpose').disabled = true;
+
+  try {
+    // Save before-snapshot for undo
+    const beforeSnap = await engine.saveAudioSnapshot(selectedTrack.id);
+    const beforeId = beforeSnap?.snapshotId;
+
+    const result = await engine.transposeAudio(selectedTrack.id, semitones, preserveTempo);
+    if (result && result.ok) {
+      // Save after-snapshot for redo
+      const afterSnap = await engine.saveAudioSnapshot(selectedTrack.id);
+      const afterId = afterSnap?.snapshotId;
+
+      if (beforeId && afterId) {
+        undoManager.push(new AudioSnapshotCommand(
+          engine, selectedTrack.id, beforeId, afterId, 'Transpose'));
+      }
+
+      const oldDuration = selectedTrack.duration;
+      selectedTrack.duration = result.duration;
+      if (result.waveform) {
+        selectedTrack.waveformData = result.waveform instanceof Float32Array ? result.waveform : new Float32Array(result.waveform);
+      }
+      // Update all regions to reflect new duration and waveform
+      for (const r of (selectedTrack.regions || [])) {
+        // Scale region bounds proportionally to the duration change
+        if (oldDuration > 0 && result.duration !== oldDuration) {
+          const ratio = result.duration / oldDuration;
+          r.clipStart *= ratio;
+          r.clipEnd *= ratio;
+        }
+        r.duration = result.duration;
+        r.waveformData = selectedTrack.waveformData;
+      }
+      renderTrackWaveform(selectedTrack);
+      setStatus(`Transposed ${semitones > 0 ? '+' : ''}${semitones} semitones`);
+    } else {
+      // Free the before-snapshot since the operation failed
+      if (beforeId) engine.freeAudioSnapshot(beforeId);
+      setStatus('Transpose failed: ' + (result?.error || 'unknown'));
+    }
+  } catch (err) {
+    setStatus('Transpose failed: ' + err.message);
+  }
+
+  document.getElementById('btn-do-transpose').disabled = false;
+  document.getElementById('transpose-modal').classList.remove('open');
+};
+
+document.getElementById('btn-close-transpose').onclick = () => {
+  document.getElementById('transpose-modal').classList.remove('open');
+};
+document.getElementById('transpose-modal').onclick = e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+};
+
+// ─── Normalize Modal ──
+let _normalizeTrack = null;
+function openNormalizeModal() {
+  if (!selectedTrack || selectedTrack.type !== 'audio' || !selectedTrack.hasBuff) {
+    setStatus('Select an audio track with audio first.');
+    return;
+  }
+  _normalizeTrack = selectedTrack;
+  document.getElementById('normalize-modal').classList.add('open');
+}
+
+document.getElementById('btn-do-normalize').onclick = async () => {
+  if (!_normalizeTrack || _normalizeTrack.type !== 'audio') return;
+  const track = _normalizeTrack;
+  const targetDb = parseFloat(document.getElementById('normalize-target').value);
+
+  document.getElementById('normalize-modal').classList.remove('open');
+  setStatus('Normalizing audio...');
+  document.getElementById('btn-do-normalize').disabled = true;
+
+  try {
+    // Save before-snapshot for undo
+    const beforeSnap = await engine.saveAudioSnapshot(track.id);
+    const beforeId = beforeSnap?.snapshotId;
+
+    const result = await engine.normalizeAudio(track.id, targetDb);
+    if (result && result.ok) {
+      // Save after-snapshot for redo
+      const afterSnap = await engine.saveAudioSnapshot(track.id);
+      const afterId = afterSnap?.snapshotId;
+
+      if (beforeId && afterId) {
+        undoManager.push(new AudioSnapshotCommand(
+          engine, track.id, beforeId, afterId, 'Normalize'));
+      }
+
+      track.duration = result.duration;
+      if (result.waveform) {
+        track.waveformData = result.waveform instanceof Float32Array ? result.waveform : new Float32Array(result.waveform);
+      }
+      renderTrackWaveform(track);
+      setStatus(`Normalized to ${targetDb} dBFS`);
+    } else {
+      if (beforeId) engine.freeAudioSnapshot(beforeId);
+      setStatus('Normalize failed: ' + (result?.error || 'unknown'));
+    }
+  } catch (err) {
+    setStatus('Normalize failed: ' + err.message);
+  }
+
+  document.getElementById('btn-do-normalize').disabled = false;
+};
+
+document.getElementById('btn-close-normalize').onclick = () => {
+  document.getElementById('normalize-modal').classList.remove('open');
+};
+document.getElementById('normalize-modal').onclick = e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+};
+
+// ─── Sync to BPM (from Functions menu) ──
+function openSyncFromFunctions() {
+  const track = selectedTrack || tracks.find(t => t.type === 'audio' && (t.hasBuff || (t.regions && t.regions.length > 0)));
+  if (!track || track.type !== 'audio' || (!track.hasBuff && !(track.regions && track.regions.length > 0))) {
+    setStatus('Select an audio track with audio first.');
+    return;
+  }
+  openSyncModal(track);
+}
+
+// ─── Sync Modal (time-stretch to match project BPM) ──
 let _tmTrack = null;
-function openTempoMatchModal(track) {
+function openSyncModal(track) {
   _tmTrack = track;
+  const projectBPM = parseFloat(document.getElementById('bpm-input').value) || 120;
+  document.getElementById('tm-target-bpm').value = String(projectBPM);
   document.getElementById('tm-source-mode').value = 'auto';
   document.getElementById('tm-manual-row').style.display = 'none';
   document.getElementById('tm-manual-bpm').value = '120';
-  document.getElementById('tm-min-bpm').value = '40';
-  document.getElementById('tm-max-bpm').value = '220';
   document.getElementById('tempo-match-modal').classList.add('open');
 }
 document.getElementById('tm-source-mode').onchange = () => {
@@ -3586,23 +3906,40 @@ document.getElementById('btn-tm-go').onclick = async () => {
   const opts = {
     sourceBpmMode: mode,
     manualBpm: parseFloat(document.getElementById('tm-manual-bpm').value) || 120,
-    minBpm: parseFloat(document.getElementById('tm-min-bpm').value) || 40,
-    maxBpm: parseFloat(document.getElementById('tm-max-bpm').value) || 220
+    minBpm: 40,
+    maxBpm: 220
   };
   document.getElementById('tempo-match-modal').classList.remove('open');
-  setStatus('Detecting BPM and tempo-matching...');
+  setStatus('Syncing audio to project BPM...');
   try {
-    const result = await engine.quantizeAudio(track.id, opts);
+    const beforeSnap = await engine.saveAudioSnapshot(track.id);
+    const beforeId = beforeSnap?.snapshotId;
+
+    const result = await engine.syncAudio(track.id, opts);
     if (result && result.ok) {
+      const afterSnap = await engine.saveAudioSnapshot(track.id);
+      const afterId = afterSnap?.snapshotId;
+      if (beforeId && afterId) {
+        undoManager.push(new AudioSnapshotCommand(
+          engine, track.id, beforeId, afterId, 'Sync to BPM'));
+      }
       track.duration = result.duration;
-      track.waveformData = result.waveform instanceof Float32Array ? result.waveform : new Float32Array(result.waveform);
+      const newWf = result.waveform instanceof Float32Array ? result.waveform : new Float32Array(result.waveform);
+      track.waveformData = newWf;
+      if (track.regions && track.regions.length > 0) {
+        track.regions[0].clipEnd = result.duration;
+        track.regions[0].duration = result.duration;
+        track.regions[0].waveformData = newWf;
+      }
+      await syncAudioRegionToNative(track);
       renderTrackWaveform(track);
-      setStatus(`Tempo matched: ${result.detectedBPM.toFixed(1)} \u2192 ${result.targetBPM.toFixed(1)} BPM`);
+      setStatus(`Synced: ${result.detectedBPM.toFixed(1)} → ${result.targetBPM.toFixed(1)} BPM`);
     } else {
-      setStatus('Tempo match failed: ' + (result?.error || 'unknown'));
+      if (beforeId) engine.freeAudioSnapshot(beforeId);
+      setStatus('Sync failed: ' + (result?.error || 'unknown'));
     }
   } catch (err) {
-    setStatus('Tempo match failed: ' + err.message);
+    setStatus('Sync failed: ' + err.message);
   }
 };
 document.getElementById('btn-tm-close').onclick = () => {
@@ -3611,6 +3948,50 @@ document.getElementById('btn-tm-close').onclick = () => {
 document.getElementById('tempo-match-modal').onclick = e => {
   if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
 };
+
+// ─── Quantize (snap beats to grid at project BPM) ──
+function openQuantizeFromFunctions() {
+  const track = selectedTrack || tracks.find(t => t.type === 'audio' && (t.hasBuff || (t.regions && t.regions.length > 0)));
+  if (!track || track.type !== 'audio' || (!track.hasBuff && !(track.regions && track.regions.length > 0))) {
+    setStatus('Select an audio track with audio first.');
+    return;
+  }
+  doQuantizeAudio(track);
+}
+
+async function doQuantizeAudio(track) {
+  setStatus('Quantizing beats to grid...');
+  try {
+    const beforeSnap = await engine.saveAudioSnapshot(track.id);
+    const beforeId = beforeSnap?.snapshotId;
+
+    const result = await engine.quantizeAudio(track.id, { gridDivision: 1.0, strength: 1.0 });
+    if (result && result.ok) {
+      const afterSnap = await engine.saveAudioSnapshot(track.id);
+      const afterId = afterSnap?.snapshotId;
+      if (beforeId && afterId) {
+        undoManager.push(new AudioSnapshotCommand(
+          engine, track.id, beforeId, afterId, 'Quantize'));
+      }
+      track.duration = result.duration;
+      const qWf = result.waveform instanceof Float32Array ? result.waveform : new Float32Array(result.waveform);
+      track.waveformData = qWf;
+      if (track.regions && track.regions.length > 0) {
+        track.regions[0].clipEnd = result.duration;
+        track.regions[0].duration = result.duration;
+        track.regions[0].waveformData = qWf;
+      }
+      await syncAudioRegionToNative(track);
+      renderTrackWaveform(track);
+      setStatus(`Quantized beats to ${result.bpm.toFixed(1)} BPM grid`);
+    } else {
+      if (beforeId) engine.freeAudioSnapshot(beforeId);
+      setStatus('Quantize failed: ' + (result?.error || 'unknown'));
+    }
+  } catch (err) {
+    setStatus('Quantize failed: ' + err.message);
+  }
+}
 
 // ─── MIDI AI Generation Modal ──
 let _midiAITrack = null;
@@ -3651,7 +4032,7 @@ document.getElementById('btn-midi-ai-generate').onclick = async () => {
     octaveHigh: parseInt(document.getElementById('ai-midi-oct-high').value),
     swingAmount: parseInt(document.getElementById('ai-midi-swing').value) / 100
   };
-  const clearFirst = document.getElementById('ai-midi-replace').checked;
+  const clearFirst = false; // Always append, never replace
 
   setStatus('Generating MIDI...');
   try {
@@ -3706,6 +4087,10 @@ let _audioAITrack = null;
 let _audioAIGenerating = false;
 
 async function openAudioAIModal(track) {
+  if (track.type === 'midi') {
+    setStatus('Audio AI is not available on MIDI tracks. Use MIDI AI instead.');
+    return;
+  }
   _audioAITrack = track;
 
   const select = document.getElementById('ai-audio-model');
@@ -3728,27 +4113,92 @@ async function openAudioAIModal(track) {
   const models = (result && result.models) || [];
 
   select.innerHTML = '';
-  if (models.length === 0) {
-    select.innerHTML = '<option value="">No models available</option>';
+  // Remove any existing download button
+  const oldDlBtn = document.getElementById('btn-audio-ai-download');
+  if (oldDlBtn) oldDlBtn.remove();
+
+  const availableModels = models.filter(m => m.available);
+  if (availableModels.length === 0) {
+    select.innerHTML = '<option value="">AI models not downloaded</option>';
     select.disabled = true;
+    generateBtn.disabled = true;
+    // Show download button
+    const dlBtn = document.createElement('button');
+    dlBtn.id = 'btn-audio-ai-download';
+    dlBtn.className = 'action-btn primary';
+    dlBtn.textContent = 'Download AI Models (~2.3 GB)';
+    dlBtn.onclick = () => startModelDownload(dlBtn, statusEl, progressWrap);
+    generateBtn.parentNode.insertBefore(dlBtn, generateBtn);
   } else {
     select.disabled = false;
     generateBtn.disabled = false;
-    for (const m of models) {
-      if (!m.available) continue;
+    for (const m of availableModels) {
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.name;
       select.appendChild(opt);
     }
-    if (select.options.length === 0) {
-      select.innerHTML = '<option value="">No models available</option>';
-      select.disabled = true;
-      generateBtn.disabled = true;
-    }
   }
 
   document.getElementById('audio-ai-modal').classList.add('open');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+async function startModelDownload(dlBtn, statusEl, progressWrap) {
+  dlBtn.disabled = true;
+  dlBtn.textContent = 'Downloading...';
+  progressWrap.style.display = 'block';
+  const progressBar = document.getElementById('ai-audio-progress-bar');
+  progressBar.style.width = '0%';
+  progressBar.classList.remove('indeterminate');
+  statusEl.textContent = 'Starting download...';
+
+  // Listen for progress
+  if (engine.onAIDownloadProgress) {
+    engine.onAIDownloadProgress((data) => {
+      if (data.status === 'downloading' && data.total > 0) {
+        const pct = ((data.received / data.total) * 100).toFixed(1);
+        progressBar.style.width = pct + '%';
+        statusEl.textContent = `${data.file}: ${formatBytes(data.received)} / ${formatBytes(data.total)} (${pct}%)`;
+      } else if (data.status === 'downloading') {
+        statusEl.textContent = `${data.file}: ${formatBytes(data.received)}`;
+      } else if (data.status === 'done') {
+        statusEl.textContent = `${data.file}: complete`;
+      } else if (data.status === 'skip') {
+        statusEl.textContent = `${data.file}: already exists`;
+      }
+    });
+  }
+
+  // Download MusicGen first, then HTDemucs
+  let result = await engine.downloadAIModels('musicgen-small');
+  if (result && result.error) {
+    statusEl.textContent = result.error;
+    dlBtn.textContent = 'Retry Download';
+    dlBtn.disabled = false;
+    return;
+  }
+
+  result = await engine.downloadAIModels('htdemucs');
+  if (result && result.error) {
+    statusEl.textContent = result.error;
+    dlBtn.textContent = 'Retry Download';
+    dlBtn.disabled = false;
+    return;
+  }
+
+  statusEl.textContent = 'All models downloaded. Refreshing...';
+  progressBar.style.width = '100%';
+  dlBtn.remove();
+
+  // Refresh the modal to show available models
+  setTimeout(() => openAudioAIModal(_audioAITrack), 500);
 }
 
 document.getElementById('ai-audio-duration').oninput = e => {
@@ -3808,8 +4258,17 @@ document.getElementById('btn-audio-ai-generate').onclick = async () => {
 
     statusEl.textContent = 'Injecting audio into track...';
     const waveform = new Float32Array(genResult.waveform);
-    const inject = await engine.injectAudioBuffer(
-      track.id, waveform, genResult.sampleRate, genResult.numChannels);
+
+    let inject;
+    const hadAudio = track.hasBuff;
+    if (hadAudio) {
+      // Append to existing audio instead of replacing
+      inject = await engine.appendAudioBuffer(
+        track.id, waveform, genResult.sampleRate, genResult.numChannels);
+    } else {
+      inject = await engine.injectAudioBuffer(
+        track.id, waveform, genResult.sampleRate, genResult.numChannels);
+    }
 
     if (inject && inject.error) {
       setStatus('Injection failed: ' + inject.error);
@@ -3825,21 +4284,40 @@ document.getElementById('btn-audio-ai-generate').onclick = async () => {
       track.hasBuff = true;
       track.waveformData = new Float32Array(wfResult.data);
       track.duration = wfResult.duration || track.duration;
-      track.region = {
-        nativeTrackId: track.id,
-        offset: 0,
-        clipStart: 0,
-        clipEnd: track.duration,
-        loopEnabled: false,
-        loopCount: 0,
-        fadeIn: 0, fadeOut: 0,
-        waveformData: track.waveformData,
-        duration: track.duration
-      };
+
+      if (hadAudio && inject.appendOffset != null) {
+        // Add a new region for the appended audio
+        track.regions.push({
+          nativeTrackId: track.id,
+          offset: inject.appendOffset,
+          clipStart: inject.appendOffset,
+          clipEnd: track.duration,
+          loopEnabled: false,
+          loopCount: 0,
+          fadeIn: 0, fadeOut: 0,
+          waveformData: track.waveformData,
+          duration: track.duration
+        });
+        // Update the overall region clip end
+        if (track.regions[0]) track.regions[0].clipEnd = track.duration;
+      } else {
+        // First generation — set single region
+        track.regions = [{
+          nativeTrackId: track.id,
+          offset: 0,
+          clipStart: 0,
+          clipEnd: track.duration,
+          loopEnabled: false,
+          loopCount: 0,
+          fadeIn: 0, fadeOut: 0,
+          waveformData: track.waveformData,
+          duration: track.duration
+        }];
+      }
       await syncAudioRegionToNative(track);
     }
     renderAllTracks();
-    setStatus(`Generated ${Math.round(track.duration)}s of AI audio`);
+    setStatus(`Generated ${Math.round(genResult.duration || duration)}s of AI audio`);
     statusEl.textContent = 'Done';
     document.getElementById('audio-ai-modal').classList.remove('open');
   } catch (err) {
@@ -3886,13 +4364,14 @@ function openStemsModal(track) {
   document.getElementById('stems-modal').classList.add('open');
 }
 document.getElementById('btn-stems-go').onclick = async () => {
-  if (!_stemsTrack) return;
+  if (!_stemsTrack) { setStatus('No track selected for stem separation.'); return; }
   const track = _stemsTrack;
+  if (!track.hasBuff) { setStatus('Track has no audio to separate.'); return; }
   const selectedStems = [];
-  if (document.getElementById('stems-vocals').checked) selectedStems.push('vocals');
-  if (document.getElementById('stems-bass').checked) selectedStems.push('bass');
-  if (document.getElementById('stems-drums').checked) selectedStems.push('drums');
-  if (document.getElementById('stems-other').checked) selectedStems.push('other');
+  if (document.getElementById('stems-vocals').checked) selectedStems.push('Vocals');
+  if (document.getElementById('stems-bass').checked) selectedStems.push('Bass');
+  if (document.getElementById('stems-drums').checked) selectedStems.push('Drums');
+  if (document.getElementById('stems-other').checked) selectedStems.push('Other');
   const muteOriginal = document.getElementById('stems-mute-original').checked;
 
   if (selectedStems.length === 0) {
@@ -3906,9 +4385,9 @@ document.getElementById('btn-stems-go').onclick = async () => {
   setStatus('Separating stems... (this may take a moment)');
   try {
     const result = await engine.separateStems(track.id, { stems: selectedStems, muteOriginal });
-    if (result && result.ok && result.tracks) {
+    if (result && result.ok && result.tracks && result.tracks.length > 0) {
       for (const st of result.tracks) {
-        tracks.push({
+        const newTrack = {
           id: st.trackId,
           type: 'audio',
           name: st.name,
@@ -3922,8 +4401,22 @@ document.getElementById('btn-stems-go').onclick = async () => {
                 eqLowGain: 0, eqMidGain: 0, eqMidFreq: 1000, eqHighGain: 0,
                 compThreshold: -24, compRatio: 4, compAttack: 0.003, compRelease: 0.25,
                 delayTime: 0, delayMix: 0, delayFeedback: 0.3 },
-          plugins: []
-        });
+          plugins: [],
+          regions: [{
+            nativeTrackId: st.trackId,
+            offset: 0, clipStart: 0, clipEnd: st.duration || track.duration,
+            loopEnabled: false, loopCount: 0, fadeIn: 0, fadeOut: 0,
+            waveformData: st.waveform instanceof Float32Array ? st.waveform : new Float32Array(st.waveform),
+            duration: st.duration || track.duration
+          }],
+          get region() { return this.regions[0] || null; },
+          set region(v) {
+            if (v === null) { this.regions = []; }
+            else if (this.regions.length === 0) { this.regions.push(v); }
+            else { this.regions[0] = v; }
+          }
+        };
+        tracks.push(newTrack);
         trackIdCounter = Math.max(trackIdCounter, st.trackId + 1);
       }
       if (muteOriginal) {
@@ -3933,10 +4426,13 @@ document.getElementById('btn-stems-go').onclick = async () => {
       renderAllTracks();
       setStatus(`Stems separated: ${result.tracks.length} new track${result.tracks.length !== 1 ? 's' : ''} created`);
     } else {
-      setStatus('Stem separation failed: ' + (result?.error || 'unknown error'));
+      const errMsg = result?.error || 'Separation returned no tracks';
+      setStatus('Stem separation failed: ' + errMsg);
+      console.error('Stem separation result:', result);
     }
   } catch (err) {
     setStatus('Stem separation failed: ' + err.message);
+    console.error('Stem separation error:', err);
   }
   if (progressEl) progressEl.classList.remove('open');
 };
@@ -3949,7 +4445,7 @@ document.getElementById('stems-modal').onclick = e => {
 
 // ─── Project Persistence (file-based via main process) ──
 async function saveProject() {
-  const name = prompt('Project name:', projectName);
+  const name = await promptProjectName(projectName);
   if (!name) return;
   projectName = name;
   setStatus('Saving...');
@@ -3958,26 +4454,30 @@ async function saveProject() {
   else setStatus(`Saved: ${projectName}`);
 }
 
-async function loadProject(id) {
-  setStatus('Loading...');
-  if (isPlaying || isRecording) await stop();
-
-  const result = await engine.loadProject(id);
-  if (result.error) { setStatus('Load failed: ' + result.error); return; }
-
-  // Clear local state
+async function restoreProjectState(result, fallbackName) {
   undoManager.clear();
+  // Clear existing native tracks before loading new ones
+  for (const track of [...tracks]) {
+    try {
+      if (track.type === 'midi') await engine.removeMidiTrack(track.id);
+      else {
+        for (const nId of (track._hiddenNativeIds || [])) {
+          try { await engine.removeTrack(nId); } catch(e) {}
+        }
+        await engine.removeTrack(track.id);
+      }
+    } catch(e) { /* best-effort cleanup */ }
+  }
   tracks = [];
   trackIdCounter = 0;
 
-  // Parse project JSON from native layer
   let p = result.project;
   if (!p && result.projectJson) {
     try { p = JSON.parse(result.projectJson); } catch(e) {}
   }
 
   if (p) {
-    projectName = p.name || id;
+    projectName = p.name || fallbackName || 'Untitled';
     document.getElementById('bpm-input').value = p.bpm || result.bpm || 120;
     document.getElementById('time-sig').value = p.timeSignature ? String(p.timeSignature) : '4';
     document.getElementById('master-volume').value = p.masterVolume || 0.8;
@@ -3986,17 +4486,13 @@ async function loadProject(id) {
     loopEnd = p.loop ? p.loop.endSec : 10;
     document.getElementById('btn-loop').classList.toggle('loop-active', loopEnabled);
 
-    // Restore audio tracks
     for (const td of (p.tracks || [])) {
       const track = {
-        id: td.id,
-        type: 'audio',
-        name: td.name,
+        id: td.id, type: 'audio', name: td.name,
         color: td.color || TRACK_COLORS[td.id % TRACK_COLORS.length],
         volume: td.volume, pan: td.pan,
         muted: td.muted, solo: td.soloed, armed: false,
-        hasBuff: !!td.audioFile,
-        duration: td.duration || 0,
+        hasBuff: !!td.audioFile, duration: td.duration || 0,
         waveformData: null,
         peakLevel: 0, peakHoldTime: 0, clipping: false,
         fx: td.fx || { eqEnabled: false, compEnabled: false, delayEnabled: false,
@@ -4004,8 +4500,7 @@ async function loadProject(id) {
                        compThreshold: -24, compRatio: 4, compAttack: 0.003, compRelease: 0.25,
                        delayTime: 0, delayMix: 0, delayFeedback: 0.3 },
         plugins: td.plugins || [],
-        regions: [],
-        _hiddenNativeIds: [],
+        regions: [], _hiddenNativeIds: [],
         get region() { return this.regions[0] || null; },
         set region(v) {
           if (v === null) { this.regions = []; }
@@ -4022,7 +4517,6 @@ async function loadProject(id) {
           track.waveformData = new Float32Array(wf.data);
           if (wf.duration) track.duration = wf.duration;
         }
-        // Restore region from saved data
         track.region = {
           nativeTrackId: track.id,
           offset: td.regionOffset || 0,
@@ -4030,20 +4524,16 @@ async function loadProject(id) {
           clipEnd: (td.regionClipEnd != null && td.regionClipEnd >= 0) ? td.regionClipEnd : (track.duration || 0),
           loopEnabled: td.regionLoopEnabled || false,
           loopCount: td.regionLoopEnabled ? 1 : 0,
-          fadeIn: td.fadeIn || 0,
-          fadeOut: td.fadeOut || 0,
-          waveformData: track.waveformData,
-          duration: track.duration
+          fadeIn: td.fadeIn || 0, fadeOut: td.fadeOut || 0,
+          waveformData: track.waveformData, duration: track.duration
         };
+        await syncAudioRegionToNative(track);
       }
     }
 
-    // Restore MIDI tracks
     for (const mt of (p.midiTracks || [])) {
       const track = {
-        id: mt.id,
-        type: 'midi',
-        name: mt.name,
+        id: mt.id, type: 'midi', name: mt.name,
         color: mt.color || TRACK_COLORS[mt.id % TRACK_COLORS.length],
         volume: mt.volume, pan: mt.pan,
         muted: mt.muted, solo: mt.soloed, armed: false,
@@ -4051,9 +4541,7 @@ async function loadProject(id) {
         instrumentType: mt.instrumentType || null,
         notes: mt.notes || [],
         peakLevel: 0, peakHoldTime: 0, clipping: false,
-        plugins: mt.plugins || [],
-        regions: [],
-        splitBeats: [],
+        plugins: mt.plugins || [], regions: [], splitBeats: [],
         get region() { return this.regions[0] || null; },
         set region(v) {
           if (v === null) { this.regions = []; }
@@ -4064,7 +4552,6 @@ async function loadProject(id) {
       trackIdCounter = Math.max(trackIdCounter, mt.id + 1);
       tracks.push(track);
 
-      // Restore built-in instrument and its params
       if (mt.instrumentType) {
         await engine.setMidiTrackBuiltInInstrument(track.id, mt.instrumentType);
         if (mt.instrumentParams) {
@@ -4074,7 +4561,9 @@ async function loadProject(id) {
         }
       }
 
-      // Ensure system limiter exists on slot 4
+      // Refresh notes from native engine to get canonical format
+      await refreshMidiNotes(track);
+
       try {
         const chainInfo = await engine.getMidiInsertChainInfo(track.id);
         if (chainInfo && chainInfo[4] && chainInfo[4].isBuiltIn && chainInfo[4].effectType === 'limiter') {
@@ -4093,7 +4582,85 @@ async function loadProject(id) {
   renderAllTracks();
   updateTimeDisplay();
   updatePlayhead();
+  // Delayed re-render to ensure DOM elements have layout dimensions for waveform canvases
+  setTimeout(() => renderAllTracks(), 100);
+}
+
+async function loadProject(id) {
+  setStatus('Loading...');
+  if (isPlaying || isRecording) await stop();
+  const result = await engine.loadProject(id);
+  if (result.error) { setStatus('Load failed: ' + result.error); return; }
+  await restoreProjectState(result, id);
   setStatus(`Loaded: ${projectName}`);
+}
+
+let currentFilePath = null; // tracks the path of the currently open file
+
+async function saveProjectFile() {
+  const name = projectName || 'Untitled';
+  setStatus('Saving file...');
+  if (currentFilePath) {
+    // Save in-place to the existing file path
+    const result = await engine.saveProjectFileToPath(name, currentFilePath);
+    if (result.error) { setStatus('Save failed: ' + result.error); return; }
+    setStatus(`Saved: ${currentFilePath}`);
+  } else {
+    // No file yet — prompt with dialog (same as Save As)
+    await saveProjectFileAs();
+  }
+}
+
+function promptProjectName(defaultName) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('save-name-modal');
+    const input = document.getElementById('save-name-input');
+    const btnSave = document.getElementById('btn-do-save-name');
+    const btnCancel = document.getElementById('btn-cancel-save-name');
+    input.value = defaultName || 'Untitled';
+    modal.classList.add('open');
+    input.focus();
+    input.select();
+
+    function cleanup() {
+      modal.classList.remove('open');
+      btnSave.removeEventListener('click', onSave);
+      btnCancel.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+    }
+    function onSave() { cleanup(); resolve(input.value.trim() || null); }
+    function onCancel() { cleanup(); resolve(null); }
+    function onKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); onSave(); }
+      if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+    }
+    btnSave.addEventListener('click', onSave);
+    btnCancel.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+  });
+}
+
+async function saveProjectFileAs() {
+  const inputName = await promptProjectName(projectName || 'Untitled');
+  if (!inputName) { setStatus('Save canceled'); return; }
+  projectName = inputName;
+  setStatus('Saving file...');
+  const result = await engine.saveProjectFile(projectName);
+  if (result.canceled) { setStatus('Save canceled'); return; }
+  if (result.error) { setStatus('Save failed: ' + result.error); return; }
+  currentFilePath = result.path;
+  setStatus(`Saved: ${result.path}`);
+}
+
+async function openProjectFile() {
+  if (isPlaying || isRecording) await stop();
+  setStatus('Opening file...');
+  const result = await engine.openProjectFile();
+  if (result.canceled) { setStatus('Open canceled'); return; }
+  if (result.error) { setStatus('Open failed: ' + result.error); return; }
+  currentFilePath = result.path || null;
+  await restoreProjectState(result, 'Imported');
+  setStatus(`Opened: ${projectName}`);
 }
 
 async function showProjectsModal() {
@@ -4141,8 +4708,7 @@ document.getElementById('btn-loop').onclick = toggleLoop;
 document.getElementById('btn-add-track').onclick = async () => { await createTrack(); renderAllTracks(); };
 document.getElementById('btn-add-midi-track').onclick = async () => { await createMidiTrack(); renderAllTracks(); };
 document.getElementById('btn-add-bus-track').onclick = async () => { await createBusTrack(); renderAllTracks(); };
-document.getElementById('btn-save').onclick = saveProject;
-document.getElementById('btn-projects').onclick = showProjectsModal;
+document.getElementById('btn-projects').onclick = showRecentFilesModal;
 document.getElementById('btn-new-project').onclick = async () => {
   if (isPlaying || isRecording) await stop();
   for (const track of [...tracks]) {
@@ -4152,6 +4718,7 @@ document.getElementById('btn-new-project').onclick = async () => {
   tracks = [];
   trackIdCounter = 0;
   projectName = 'Untitled';
+  currentFilePath = null;
   currentTime = 0;
   renderAllTracks();
   updateTimeDisplay();
@@ -4464,8 +5031,9 @@ document.addEventListener('keydown', async (e) => {
     return;
   }
 
-  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyS') { e.preventDefault(); saveProject(); return; }
-  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyO') { e.preventDefault(); showProjectsModal(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyS') { e.preventDefault(); saveProjectFileAs(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyS') { e.preventDefault(); saveProjectFile(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyO') { e.preventDefault(); openProjectFile(); return; }
 
   // Blade/Split at playhead (Cmd+B)
   if ((e.metaKey || e.ctrlKey) && e.code === 'KeyB') {
@@ -4756,6 +5324,7 @@ document.addEventListener('drop', async (e) => {
     }
   }
   renderAllTracks();
+  setTimeout(() => renderAllTracks(), 100);
   setStatus('Imported audio');
 });
 
@@ -4777,10 +5346,15 @@ engine.onMenuAction((action) => {
       }
       break;
     case 'new': document.getElementById('btn-new-project').click(); break;
-    case 'open': showProjectsModal(); break;
-    case 'save': saveProject(); break;
+    case 'open': openProjectFile(); break;
+    case 'openFile': openProjectFile(); break;
+    case 'openRecent': showRecentFilesModal(); break;
+    case 'save': saveProjectFile(); break;
+    case 'saveAs': saveProjectFileAs(); break;
     case 'import': document.getElementById('btn-import').click(); break;
     case 'exportWav': document.getElementById('btn-export').click(); break;
+    case 'exportAiff': document.getElementById('btn-export').click(); break;
+    case 'bounce': document.getElementById('btn-bounce').click(); break;
     case 'zoomIn':
       zoomLevel = Math.min(200, zoomLevel * 1.25);
       document.getElementById('zoom-slider').value = zoomLevel;
@@ -4825,6 +5399,64 @@ async function autoConnectMidi(attempt = 1) {
   }
 }
 autoConnectMidi();
+
+// ─── Recent Files Modal ──
+async function showRecentFilesModal() {
+  const modal = document.getElementById('recent-files-modal');
+  const list = document.getElementById('recent-files-list');
+  list.innerHTML = '';
+
+  const result = await engine.getRecentFiles();
+  const files = (result && result.files) || [];
+
+  if (files.length === 0) {
+    list.innerHTML = '<li class="no-projects">No recent projects. Use Browse to open a file.</li>';
+  } else {
+    const showFiles = files.slice(0, 8);
+    for (const f of showFiles) {
+      const li = document.createElement('li');
+      li.className = 'project-item';
+      const dateStr = f.date ? new Date(f.date).toLocaleDateString() : '';
+      li.innerHTML = `
+        <div>
+          <div class="proj-name">${escHTML(f.name)}</div>
+          <div class="proj-date">${dateStr} &middot; ${escHTML(f.path)}</div>
+        </div>
+      `;
+      li.onclick = async () => {
+        modal.classList.remove('open');
+        setStatus('Opening file...');
+        if (isPlaying || isRecording) await stop();
+        const openResult = await engine.openFilePath(f.path);
+        if (openResult.error) { setStatus('Open failed: ' + openResult.error); return; }
+        currentFilePath = f.path;
+        await restoreProjectState(openResult, f.name);
+        setStatus(`Opened: ${projectName}`);
+      };
+      list.appendChild(li);
+    }
+  }
+
+  modal.classList.add('open');
+}
+
+document.getElementById('btn-recent-open-file').onclick = () => {
+  document.getElementById('recent-files-modal').classList.remove('open');
+  openProjectFile();
+};
+document.getElementById('btn-recent-new').onclick = () => {
+  document.getElementById('recent-files-modal').classList.remove('open');
+  document.getElementById('btn-new-project').click();
+};
+document.getElementById('btn-recent-close').onclick = () => {
+  document.getElementById('recent-files-modal').classList.remove('open');
+};
+document.getElementById('recent-files-modal').onclick = e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+};
+
+// Show recent files on startup
+setTimeout(() => showRecentFilesModal(), 500);
 
 // Periodic MIDI device scan for hotplug support
 setInterval(async () => {

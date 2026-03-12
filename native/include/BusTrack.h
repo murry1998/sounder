@@ -63,6 +63,7 @@ private:
 
     juce::AudioBuffer<float> inputBuffer;
     std::array<std::unique_ptr<juce::AudioProcessor>, MAX_INSERT_SLOTS> insertSlots;
+    juce::SpinLock insertLock;
     juce::MidiBuffer emptyMidi;
 
     // Built-in channel strip FX

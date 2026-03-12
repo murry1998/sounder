@@ -2,6 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, systemPreferences, shell } = 
 const { fork } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const AdmZip = require('adm-zip');
 
 // Native addon — try packaged (asar-unpacked) path first, then dev path
 let sounderNative = null;
@@ -19,6 +21,28 @@ try {
 
 let mainWindow = null;
 const PROJECTS_DIR = path.join(app.getPath('documents'), 'Sounder');
+const RECENT_FILES_PATH = path.join(app.getPath('userData'), 'recent-files.json');
+
+function getRecentFiles() {
+  try {
+    if (fs.existsSync(RECENT_FILES_PATH)) {
+      return JSON.parse(fs.readFileSync(RECENT_FILES_PATH, 'utf8'));
+    }
+  } catch (e) { /* ignore */ }
+  return [];
+}
+
+function addRecentFile(filePath, name) {
+  let recents = getRecentFiles();
+  // Remove duplicate if exists
+  recents = recents.filter(r => r.path !== filePath);
+  // Add to front
+  recents.unshift({ path: filePath, name: name || path.basename(filePath, '.sounder'), date: new Date().toISOString() });
+  // Keep only 20 most recent
+  recents = recents.slice(0, 20);
+  try { fs.writeFileSync(RECENT_FILES_PATH, JSON.stringify(recents, null, 2)); } catch (e) { /* ignore */ }
+  return recents;
+}
 
 // Spawn a worker process that loads the native addon fresh and scans plugins.
 // If a plugin crashes the worker, the main app survives. Results are saved
@@ -118,7 +142,8 @@ app.whenReady().then(async () => {
     sounderNative.initialize({
       sampleRate: 48000,
       bufferSize: 512,
-      projectsDir: PROJECTS_DIR
+      projectsDir: PROJECTS_DIR,
+      resourcesDir: path.join(app.getAppPath(), 'resources')
     });
   }
 
@@ -243,8 +268,8 @@ function registerIPCHandlers() {
   });
 
   // ── Audio Region ──
-  ipcMain.handle('engine:setAudioRegion', (_event, trackId, offset, clipStart, clipEnd, loopEnabled) => {
-    if (sounderNative) sounderNative.setAudioRegion(trackId, offset, clipStart, clipEnd, loopEnabled);
+  ipcMain.handle('engine:setAudioRegion', (_event, trackId, offset, clipStart, clipEnd, loopEnabled, loopCount) => {
+    if (sounderNative) sounderNative.setAudioRegion(trackId, offset, clipStart, clipEnd, loopEnabled, loopCount || 0);
     return { ok: true };
   });
   ipcMain.handle('engine:splitAudioTrack', async (_event, trackId, splitTime) => {
@@ -381,6 +406,43 @@ function registerIPCHandlers() {
     catch (e) { return { error: e.message }; }
   });
 
+  ipcMain.handle('engine:appendAudioBuffer', (_event, trackId, waveform, sampleRate, numChannels) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.appendAudioBuffer(trackId, waveform, sampleRate, numChannels); }
+    catch (e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('engine:transposeAudio', (_event, trackId, semitones, preserveTempo) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.transposeAudio(trackId, semitones, preserveTempo); }
+    catch (e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('engine:normalizeAudio', (_event, trackId, targetDb) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.normalizeAudio(trackId, targetDb || 0); }
+    catch (e) { return { error: e.message }; }
+  });
+
+  // Audio snapshots (undo support)
+  ipcMain.handle('engine:saveAudioSnapshot', (_event, trackId) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.saveAudioSnapshot(trackId); }
+    catch (e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('engine:restoreAudioSnapshot', (_event, trackId, snapshotId) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.restoreAudioSnapshot(trackId, snapshotId); }
+    catch (e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('engine:freeAudioSnapshot', (_event, snapshotId) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try { return sounderNative.freeAudioSnapshot(snapshotId); }
+    catch (e) { return { error: e.message }; }
+  });
+
   // ── AI Audio Generation (transformers.js) ──
   const aiEngine = require('./aiAudioEngine.js');
 
@@ -402,6 +464,21 @@ function registerIPCHandlers() {
   ipcMain.handle('ai:cancelGeneration', async () => {
     try { return aiEngine.cancelGeneration(); }
     catch (e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('ai:getMissingModels', () => {
+    try { return { missing: aiEngine.getMissingModels() }; }
+    catch (e) { return { missing: [], error: e.message }; }
+  });
+
+  ipcMain.handle('ai:downloadModels', async (event, modelId) => {
+    try {
+      return await aiEngine.downloadModels(modelId, (progress) => {
+        if (event.sender && !event.sender.isDestroyed()) {
+          event.sender.send('ai:downloadProgress', progress);
+        }
+      });
+    } catch (e) { return { error: e.message }; }
   });
 
   // ── Built-in Instrument Parameters ──
@@ -602,6 +679,128 @@ function registerIPCHandlers() {
     if (!sounderNative) return { error: 'Native engine not loaded' };
     return sounderNative.loadProject(PROJECTS_DIR, projectId);
   });
+
+  // ── Self-contained .sounder file I/O ──
+  ipcMain.handle('project:saveFile', async (_event, name) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Sounder Project',
+      defaultPath: `${name || 'Untitled'}.sounder`,
+      filters: [{ name: 'Sounder Project', extensions: ['sounder'] }]
+    });
+    if (result.canceled) return { canceled: true };
+
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sounder-export-'));
+      const projectName = name || 'Untitled';
+      const ok = sounderNative.saveProject(tmpDir, projectName);
+      if (!ok) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        return { error: 'Native save failed' };
+      }
+
+      const projectDir = path.join(tmpDir, projectName);
+      const zip = new AdmZip();
+      const entries = fs.readdirSync(projectDir);
+      for (const entry of entries) {
+        zip.addLocalFile(path.join(projectDir, entry));
+      }
+      zip.writeZip(result.filePath);
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      addRecentFile(result.filePath, projectName);
+      return { ok: true, path: result.filePath };
+    } catch (e) {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { error: e.message || 'Save file failed' };
+    }
+  });
+
+  // Save directly to a known file path (no dialog)
+  ipcMain.handle('project:saveFileToPath', async (_event, name, filePath) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sounder-export-'));
+      const projectName = name || 'Untitled';
+      const ok = sounderNative.saveProject(tmpDir, projectName);
+      if (!ok) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        return { error: 'Native save failed' };
+      }
+      const projectDir = path.join(tmpDir, projectName);
+      const zip = new AdmZip();
+      const entries = fs.readdirSync(projectDir);
+      for (const entry of entries) {
+        zip.addLocalFile(path.join(projectDir, entry));
+      }
+      zip.writeZip(filePath);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      addRecentFile(filePath, projectName);
+      return { ok: true, path: filePath };
+    } catch (e) {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { error: e.message || 'Save file failed' };
+    }
+  });
+
+  ipcMain.handle('project:openFile', async () => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Open Sounder Project',
+      filters: [{ name: 'Sounder Project', extensions: ['sounder'] }],
+      properties: ['openFile']
+    });
+    if (result.canceled || !result.filePaths.length) return { canceled: true };
+
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sounder-import-'));
+      const zip = new AdmZip(result.filePaths[0]);
+      zip.extractAllTo(tmpDir, true);
+
+      // Verify project.json exists
+      const jsonPath = path.join(tmpDir, 'project.json');
+      if (!fs.existsSync(jsonPath)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        return { error: 'Invalid .sounder file: no project.json found' };
+      }
+
+      // loadProject expects (parentDir, subfolderName) — move files into a subfolder
+      const projectData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      const projectName = projectData.name || 'Imported';
+      const projectSubDir = path.join(tmpDir, projectName);
+
+      if (!fs.existsSync(projectSubDir)) {
+        fs.mkdirSync(projectSubDir, { recursive: true });
+        const files = fs.readdirSync(tmpDir);
+        for (const file of files) {
+          if (file === projectName) continue;
+          fs.renameSync(path.join(tmpDir, file), path.join(projectSubDir, file));
+        }
+      }
+
+      const loadResult = sounderNative.loadProject(tmpDir, projectName);
+
+      // Attach project JSON for renderer UI reconstruction
+      const reJsonPath = path.join(projectSubDir, 'project.json');
+      if (fs.existsSync(reJsonPath)) {
+        loadResult.projectJson = fs.readFileSync(reJsonPath, 'utf8');
+      }
+
+      addRecentFile(result.filePaths[0], projectName);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      loadResult.path = result.filePaths[0];
+      return loadResult;
+    } catch (e) {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { error: e.message || 'Open file failed' };
+    }
+  });
+
   ipcMain.handle('project:list', () => {
     // List project directories in ~/Documents/Sounder/
     try {
@@ -634,6 +833,55 @@ function registerIPCHandlers() {
     }
     return { ok: true };
   });
+  // ── Recent Files ──
+  ipcMain.handle('project:getRecentFiles', () => {
+    return { files: getRecentFiles() };
+  });
+
+  ipcMain.handle('project:openFilePath', async (_event, filePath) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    if (!fs.existsSync(filePath)) return { error: 'File not found: ' + filePath };
+
+    let tmpDir;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sounder-import-'));
+      const zip = new AdmZip(filePath);
+      zip.extractAllTo(tmpDir, true);
+
+      const jsonPath = path.join(tmpDir, 'project.json');
+      if (!fs.existsSync(jsonPath)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        return { error: 'Invalid .sounder file: no project.json found' };
+      }
+
+      const projectData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      const projectName = projectData.name || 'Imported';
+      const projectSubDir = path.join(tmpDir, projectName);
+
+      if (!fs.existsSync(projectSubDir)) {
+        fs.mkdirSync(projectSubDir, { recursive: true });
+        const files = fs.readdirSync(tmpDir);
+        for (const file of files) {
+          if (file === projectName) continue;
+          fs.renameSync(path.join(tmpDir, file), path.join(projectSubDir, file));
+        }
+      }
+
+      const loadResult = sounderNative.loadProject(tmpDir, projectName);
+      const reJsonPath = path.join(projectSubDir, 'project.json');
+      if (fs.existsSync(reJsonPath)) {
+        loadResult.projectJson = fs.readFileSync(reJsonPath, 'utf8');
+      }
+
+      addRecentFile(filePath, projectName);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      return loadResult;
+    } catch (e) {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { error: e.message || 'Open file failed' };
+    }
+  });
+
   ipcMain.handle('project:exportWAV', async () => {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: 'Export WAV',
@@ -671,10 +919,21 @@ function registerIPCHandlers() {
     if (!sounderNative) return { error: 'Native engine not loaded' };
     try {
       const result = sounderNative.quantizeAudio(trackId, options || {});
-      if (!result || !result.ok) return { error: result?.detectedBPM ? `Tempo match failed (detected ${result.detectedBPM.toFixed(1)} BPM)` : 'Could not detect BPM' };
+      if (!result || !result.ok) return { error: 'Quantize failed — no beats detected or audio unchanged' };
+      return { ok: true, bpm: result.bpm, duration: result.duration, waveform: Array.from(result.waveform) };
+    } catch (e) {
+      return { error: e.message || 'Quantize failed' };
+    }
+  });
+
+  ipcMain.handle('engine:syncAudio', async (_event, trackId, options) => {
+    if (!sounderNative) return { error: 'Native engine not loaded' };
+    try {
+      const result = sounderNative.syncAudio(trackId, options || {});
+      if (!result || !result.ok) return { error: result?.detectedBPM ? `Sync failed (detected ${result.detectedBPM.toFixed(1)} BPM)` : 'Could not detect BPM' };
       return { ok: true, detectedBPM: result.detectedBPM, targetBPM: result.targetBPM, duration: result.duration, waveform: Array.from(result.waveform) };
     } catch (e) {
-      return { error: e.message || 'Tempo match failed' };
+      return { error: e.message || 'Sync failed' };
     }
   });
 
@@ -689,6 +948,74 @@ function registerIPCHandlers() {
     const exportResult = sounderNative.exportStems({ ...options, outputDir });
     return exportResult;
   });
+  ipcMain.handle('project:bounce', async (_event, options) => {
+    const format = options.format || 'wav';
+    const ext = format === 'aiff' ? 'aiff' : 'wav';
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Bounce Mixdown',
+      defaultPath: `Mixdown.${ext}`,
+      filters: [
+        { name: 'Audio Files', extensions: [ext] }
+      ]
+    });
+    if (result.canceled) return { canceled: true };
+    if (!sounderNative) return { ok: false, error: 'No engine' };
+
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+
+    // Export to a temp directory, then move the Mixdown file to chosen path
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sounder-bounce-'));
+    try {
+      const exportResult = sounderNative.exportStems({
+        outputDir: tmpDir,
+        exportStems: false,
+        exportMixdown: true,
+        bitDepth: options.bitDepth || 24,
+        format: format,
+        mp3Bitrate: options.mp3Bitrate || 320,
+        normalize: options.normalize || false
+      });
+
+      if (!exportResult.ok) return { ok: false, error: exportResult.error || 'Export failed' };
+
+      // Move the mixdown file to chosen path
+      const mixdownFile = path.join(tmpDir, `Mixdown.${ext}`);
+      if (fs.existsSync(mixdownFile)) {
+        fs.copyFileSync(mixdownFile, result.filePath);
+      }
+
+      // Also export MP3 if requested
+      let mp3Path = null;
+      if (options.alsoMp3) {
+        const mp3Result = sounderNative.exportStems({
+          outputDir: tmpDir,
+          exportStems: false,
+          exportMixdown: true,
+          bitDepth: 16,
+          format: 'mp3',
+          mp3Bitrate: options.mp3Bitrate || 320,
+          normalize: options.normalize || false
+        });
+        if (mp3Result.ok) {
+          const mp3Src = path.join(tmpDir, 'Mixdown.mp3');
+          mp3Path = result.filePath.replace(/\.\w+$/, '.mp3');
+          if (fs.existsSync(mp3Src)) {
+            fs.copyFileSync(mp3Src, mp3Path);
+          }
+        }
+      }
+
+      // Clean up temp dir
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { ok: true, path: result.filePath, mp3Path };
+    } catch (e) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('midi:importFile', async (_event, trackId) => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Import MIDI File',

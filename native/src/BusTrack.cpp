@@ -16,11 +16,16 @@ void BusTrack::clearInputBuffer(int numSamples) {
 }
 
 void BusTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples) {
-    // Process insert chain
+    // Process insert chain (try-lock: skip if insert is being swapped)
     emptyMidi.clear();
-    for (int i = 0; i < MAX_INSERT_SLOTS; ++i) {
-        if (insertSlots[i])
-            insertSlots[i]->processBlock(inputBuffer, emptyMidi);
+    {
+        juce::SpinLock::ScopedTryLockType lock(insertLock);
+        if (lock.isLocked()) {
+            for (int i = 0; i < MAX_INSERT_SLOTS; ++i) {
+                if (insertSlots[i])
+                    insertSlots[i]->processBlock(inputBuffer, emptyMidi);
+            }
+        }
     }
 
     // Apply volume and pan, mix to output
@@ -48,19 +53,35 @@ void BusTrack::processBlock(juce::AudioBuffer<float>& output, int numSamples) {
 void BusTrack::insertBuiltInEffect(int slot, std::unique_ptr<juce::AudioProcessor> effect) {
     if (slot >= 0 && slot < MAX_INSERT_SLOTS) {
         effect->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slot] = std::move(effect);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slot]);
+            insertSlots[slot] = std::move(effect);
+        }
     }
 }
 
 void BusTrack::insertPlugin(int slot, std::unique_ptr<juce::AudioPluginInstance> plugin) {
     if (slot >= 0 && slot < MAX_INSERT_SLOTS) {
         plugin->prepareToPlay(sampleRate, blockSize);
-        insertSlots[slot] = std::move(plugin);
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slot]);
+            insertSlots[slot] = std::move(plugin);
+        }
     }
 }
 
 void BusTrack::removeInsert(int slot) {
-    if (slot >= 0 && slot < MAX_INSERT_SLOTS) insertSlots[slot].reset();
+    if (slot >= 0 && slot < MAX_INSERT_SLOTS) {
+        std::unique_ptr<juce::AudioProcessor> old;
+        {
+            juce::SpinLock::ScopedLockType lock(insertLock);
+            old = std::move(insertSlots[slot]);
+        }
+    }
 }
 
 juce::AudioProcessor* BusTrack::getInsert(int slot) {

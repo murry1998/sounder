@@ -27,15 +27,17 @@ module.exports = function(mainWindow) {
       submenu: [
         { label: 'New Project', accelerator: 'CmdOrCtrl+N', click: () => sendMenuAction('new') },
         { type: 'separator' },
-        { label: 'Open Project...', accelerator: 'CmdOrCtrl+O', click: () => sendMenuAction('open') },
+        { label: 'Open...', accelerator: 'CmdOrCtrl+O', click: () => sendMenuAction('open') },
         { type: 'separator' },
-        { label: 'Save Project', accelerator: 'CmdOrCtrl+S', click: () => sendMenuAction('save') },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => sendMenuAction('save') },
         { label: 'Save As...', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendMenuAction('saveAs') },
         { type: 'separator' },
         { label: 'Import Audio...', accelerator: 'CmdOrCtrl+I', click: () => sendMenuAction('import') },
         { type: 'separator' },
         { label: 'Export WAV...', click: () => sendMenuAction('exportWav') },
         { label: 'Export AIFF...', click: () => sendMenuAction('exportAiff') },
+        { type: 'separator' },
+        { label: 'Bounce...', accelerator: 'CmdOrCtrl+B', click: () => sendMenuAction('bounce') },
         { type: 'separator' },
         ...(isMac ? [] : [{ role: 'quit' }])
       ]

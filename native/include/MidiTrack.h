@@ -108,6 +108,7 @@ private:
     std::unique_ptr<juce::AudioProcessor> instrumentProcessor;
     // Insert effect slots (native or VST)
     std::array<std::unique_ptr<juce::AudioProcessor>, MAX_INSERT_SLOTS> insertSlots;
+    juce::SpinLock insertLock;
 
     // Processing buffers
     juce::AudioBuffer<float> instrumentOutputBuffer;

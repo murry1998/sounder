@@ -181,8 +181,8 @@ juce::AudioBuffer<float> BeatQuantizer::wsolaStretch(
 
     if (targetLength <= 0) targetLength = 1;
 
-    // Very short segments or near-identical lengths: linear crossfade
-    if (sourceLength < 64 || std::abs(sourceLength - targetLength) < 32) {
+    // Very short segments or near-identical lengths: direct copy
+    if (sourceLength < 256 || std::abs(sourceLength - targetLength) < 64) {
         juce::AudioBuffer<float> result(numChannels, targetLength);
         result.clear();
         int copyLen = std::min(sourceLength, targetLength);
@@ -195,8 +195,9 @@ juce::AudioBuffer<float> BeatQuantizer::wsolaStretch(
     ratio = std::clamp(ratio, 0.25, 4.0);
     int clampedTarget = static_cast<int>(sourceLength * ratio);
 
-    int winSize = std::min(WSOLA_WINDOW_SIZE, sourceLength);
-    if (winSize < 64) winSize = std::min(64, sourceLength);
+    // Use half-window overlap (hop = winSize/2) for cleaner COLA
+    int winSize = std::min(WSOLA_WINDOW_SIZE, sourceLength / 2);
+    if (winSize < 256) winSize = std::min(256, sourceLength);
     int hopOut = winSize / 2;
     int hopIn = std::max(1, static_cast<int>(hopOut / ratio));
 
@@ -205,7 +206,7 @@ juce::AudioBuffer<float> BeatQuantizer::wsolaStretch(
     for (int i = 0; i < winSize; i++)
         hann[i] = 0.5f * (1.0f - std::cos(2.0 * juce::MathConstants<double>::pi * i / winSize));
 
-    int bufLen = clampedTarget + winSize;
+    int bufLen = clampedTarget + winSize * 2;
     juce::AudioBuffer<float> result(numChannels, bufLen);
     result.clear();
     std::vector<float> weightSum(bufLen, 0.0f);
@@ -217,22 +218,44 @@ juce::AudioBuffer<float> BeatQuantizer::wsolaStretch(
 
     while (outPos < clampedTarget) {
         int idealSrc = static_cast<int>(srcPos);
-        idealSrc = std::max(0, std::min(idealSrc, sourceLength - winSize));
+        idealSrc = std::clamp(idealSrc, 0, std::max(0, sourceLength - winSize));
 
         int bestSrc = idealSrc;
-        if (outPos > 0) {
-            int searchStart = std::max(0, idealSrc - WSOLA_TOLERANCE);
-            int searchEnd = std::min(sourceLength - winSize, idealSrc + WSOLA_TOLERANCE);
-            if (searchEnd > searchStart) {
-                int overlap = std::min(winSize, sourceLength - searchStart);
-                int fixedPos = std::max(0, std::min(idealSrc, sourceLength - overlap));
-                int offset = findBestOverlap(
-                    srcCh0 + fixedPos,
-                    srcCh0 + searchStart,
-                    searchEnd - searchStart + overlap,
-                    overlap);
-                bestSrc = searchStart + offset;
-                bestSrc = std::max(0, std::min(bestSrc, sourceLength - winSize));
+
+        // For all frames after the first, search for the best overlap match
+        if (outPos > 0 && winSize > 0) {
+            int searchMin = std::max(0, idealSrc - WSOLA_TOLERANCE);
+            int searchMax = std::min(sourceLength - winSize, idealSrc + WSOLA_TOLERANCE);
+
+            if (searchMax > searchMin) {
+                // Compare candidates against what's already in the output at outPos
+                // Use a small overlap region for correlation
+                int corrLen = std::min(winSize / 2, clampedTarget - outPos);
+                corrLen = std::min(corrLen, outPos);  // can't look back further than we've written
+                if (corrLen < 32) corrLen = std::min(32, winSize);
+
+                float bestCorr = -1e30f;
+                // Get the output signal at the overlap point (already normalized)
+                // Actually, compare source candidates directly
+                // Find source position that best matches the end of the previous window
+                int prevSrcEnd = std::max(0, idealSrc);
+                for (int candidate = searchMin; candidate <= searchMax; candidate += 4) {
+                    if (candidate + winSize > sourceLength) continue;
+                    float corr = 0.0f;
+                    // Cross-correlate the beginning of this candidate with the
+                    // source region around where the previous frame ended
+                    int refStart = std::max(0, prevSrcEnd - hopIn);
+                    int cLen = std::min(corrLen, sourceLength - std::max(candidate, refStart));
+                    cLen = std::min(cLen, winSize);
+                    if (cLen <= 0) continue;
+                    for (int i = 0; i < cLen; i++)
+                        corr += srcCh0[refStart + i] * srcCh0[candidate + i];
+                    if (corr > bestCorr) {
+                        bestCorr = corr;
+                        bestSrc = candidate;
+                    }
+                }
+                bestSrc = std::clamp(bestSrc, 0, std::max(0, sourceLength - winSize));
             }
         }
 
@@ -253,11 +276,11 @@ juce::AudioBuffer<float> BeatQuantizer::wsolaStretch(
         srcPos += hopIn;
     }
 
-    // Normalize
+    // Normalize by overlap weight
     for (int ch = 0; ch < numChannels; ch++) {
         float* data = result.getWritePointer(ch);
         for (int i = 0; i < clampedTarget; i++) {
-            if (weightSum[i] > 1e-8f)
+            if (weightSum[i] > 1e-6f)
                 data[i] /= weightSum[i];
         }
     }
@@ -478,8 +501,8 @@ TempoMatchResult BeatQuantizer::tempoMatch(
     double ratio = targetBPM / sourceBPM;
     result.stretchRatio = ratio;
 
-    // If already close enough, return a copy
-    if (ratio > 0.97 && ratio < 1.03) {
+    // If essentially identical (within 0.5%), return a copy
+    if (ratio > 0.995 && ratio < 1.005) {
         result.stretchedBuffer = std::make_unique<juce::AudioBuffer<float>>(numChannels, numSamples);
         for (int ch = 0; ch < numChannels; ch++)
             result.stretchedBuffer->copyFrom(ch, 0, source, ch, 0, numSamples);
